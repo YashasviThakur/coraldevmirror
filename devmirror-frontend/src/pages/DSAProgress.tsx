@@ -13,6 +13,9 @@ const DEMO: DSAData = {
     easy: 5,
     medium: 4,
     hard: 2,
+    easy_total: 814,
+    medium_total: 1715,
+    hard_total: 741,
     streak: 2,
     acceptance_rate: 68.4,
     recent: [
@@ -72,11 +75,13 @@ export default function DSAProgress() {
 
   const d = data ?? DEMO
 
-  const total = Math.max(d.leetcode.total_solved, 1)
+  const easyTotal   = d.leetcode.easy_total   || 814
+  const mediumTotal = d.leetcode.medium_total || 1715
+  const hardTotal   = d.leetcode.hard_total   || 741
   const radialData = [
-    { name: 'Hard',   value: (d.leetcode.hard   / total) * 100, fill: '#EF4444' },
-    { name: 'Medium', value: (d.leetcode.medium / total) * 100, fill: '#F59E0B' },
-    { name: 'Easy',   value: (d.leetcode.easy   / total) * 100, fill: '#10B981' },
+    { name: 'Hard',   value: (d.leetcode.hard   / hardTotal)   * 100, fill: '#EF4444' },
+    { name: 'Medium', value: (d.leetcode.medium / mediumTotal) * 100, fill: '#F59E0B' },
+    { name: 'Easy',   value: (d.leetcode.easy   / easyTotal)   * 100, fill: '#10B981' },
   ]
 
   const cfBarData = d.codeforces.recent.map(r => ({
@@ -125,17 +130,17 @@ export default function DSAProgress() {
                 </div>
                 <div className="flex-1 space-y-3">
                   {[
-                    { label: 'Easy',   val: d.leetcode.easy,   color: 'bg-dm-green',  text: 'text-dm-green' },
-                    { label: 'Medium', val: d.leetcode.medium, color: 'bg-dm-amber',  text: 'text-dm-amber' },
-                    { label: 'Hard',   val: d.leetcode.hard,   color: 'bg-red-500',   text: 'text-red-400' },
-                  ].map(({ label, val, color, text }) => (
+                    { label: 'Easy',   val: d.leetcode.easy,   tot: easyTotal,   color: 'bg-dm-green',  text: 'text-dm-green' },
+                    { label: 'Medium', val: d.leetcode.medium, tot: mediumTotal, color: 'bg-dm-amber',  text: 'text-dm-amber' },
+                    { label: 'Hard',   val: d.leetcode.hard,   tot: hardTotal,   color: 'bg-red-500',   text: 'text-red-400' },
+                  ].map(({ label, val, tot, color, text }) => (
                     <div key={label}>
                       <div className="flex justify-between text-xs mb-1">
                         <span className={text + ' font-medium'}>{label}</span>
-                        <span className="text-dm-muted font-mono">{val} / {total}</span>
+                        <span className="text-dm-muted font-mono">{val} / {tot}</span>
                       </div>
                       <div className="h-2 bg-dm-border rounded-full overflow-hidden">
-                        <div className={`h-full ${color} rounded-full`} style={{ width: `${(val / total) * 100}%` }} />
+                        <div className={`h-full ${color} rounded-full`} style={{ width: `${(val / tot) * 100}%` }} />
                       </div>
                     </div>
                   ))}
