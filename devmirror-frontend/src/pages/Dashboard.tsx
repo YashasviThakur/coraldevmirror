@@ -209,7 +209,7 @@ export default function Dashboard() {
 
   const now      = new Date()
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'
-  const userLabel = profile?.email ? profile.email.split('@')[0] : `User #${userId}`
+  const userLabel = profile?.name ?? (profile?.email ? profile.email.split('@')[0] : `User #${userId}`)
 
   // -- Not logged in state ------------------------------------------------------
   if (!loading && !userId) {
