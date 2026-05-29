@@ -1413,8 +1413,7 @@ async def data_youtube_liked(user_id: int = Query(...), db: Session = Depends(ge
 # ── Gemini AI coach with calendar scheduling ───────────────────────────────────
 
 @app.post("/api/agent/ask")
-async def ask_agent(body: AskRequest):
-    # coraldevmirror: hardcoded demo user, no DB lookup
+async def ask_agent(body: AskRequest, db: Session = Depends(get_db)):
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         goal_1="Crack LeetCode 150",
         goal_2="Reach CF 1600",
@@ -1422,11 +1421,59 @@ async def ask_agent(body: AskRequest):
         today=datetime.utcnow().strftime("%Y-%m-%d"),
     )
     raw_response, _ok = call_ai(system_prompt, body.question)
-    return {
-        "response":         raw_response,
-        "scheduled_events": [],
-        "is_schedule":      False,
-    }
+
+    # Try to parse a JSON event array from the AI's response
+    events_data = _extract_json_array(raw_response)
+    if not events_data:
+        return {"response": raw_response, "scheduled_events": [], "is_schedule": False}
+
+    # Create each event on the user's Google Calendar
+    token = _get_demo_google_token(db) or ""
+    created: list[dict] = []
+    for ev in events_data:
+        if not ev.get("start_time") or not ev.get("end_time"):
+            continue
+        try:
+            result = _create_calendar_event(token, ev)
+            created.append({
+                "summary": ev.get("summary", "Event"),
+                "start":   ev["start_time"],
+                "end":     ev["end_time"],
+                "id":      result.get("id", ""),
+            })
+        except Exception:
+            pass
+
+    if not created:
+        return {"response": raw_response, "scheduled_events": [], "is_schedule": False}
+
+    # Build a friendly human-readable confirmation
+    if len(created) == 1:
+        ev = created[0]
+        try:
+            dt = datetime.fromisoformat(ev["start"].replace("Z", "+00:00"))
+            time_str = dt.strftime("%I:%M %p on %A, %b %d").lstrip("0")
+        except Exception:
+            time_str = ev["start"][:16]
+        friendly = (
+            f"Done! I've added **{ev['summary']}** to your Google Calendar at {time_str}. "
+            "You'll see it appear in your upcoming events shortly. You've got this! 🗓️"
+        )
+    else:
+        lines = []
+        for ev in created:
+            try:
+                dt = datetime.fromisoformat(ev["start"].replace("Z", "+00:00"))
+                lines.append(f"• **{ev['summary']}** — {dt.strftime('%a %b %d, %I:%M %p').replace(' 0', ' ')}")
+            except Exception:
+                lines.append(f"• {ev['summary']}")
+        friendly = (
+            f"All set! I've added {len(created)} sessions to your Google Calendar:\n\n"
+            + "\n".join(lines)
+            + "\n\nStick to the plan and crush it! 💪"
+        )
+
+    return {"response": friendly, "scheduled_events": created, "is_schedule": True}
 
 
 # ── Backward-compatible endpoints (single-user fallback) ─────────────────────
@@ -1871,6 +1918,7 @@ async def coral_user():
     """Hardcoded demo user profile — no auth required."""
     return {
         "id":                1,
+        "name":              "Yashasvi Thakur",
         "email":             "yashasvithakur2005@gmail.com",
         "account_type":      "personal",
         "institution_name":  None,

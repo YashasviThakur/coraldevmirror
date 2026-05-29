@@ -31,6 +31,7 @@ export function clearUserId(): void {}
 
 export interface UserProfile {
   id:                number
+  name?:             string
   email:             string
   account_type:      'personal' | 'institution'
   institution_name:  string | null
