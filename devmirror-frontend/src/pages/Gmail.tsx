@@ -19,6 +19,12 @@ const catStyle: Record<string, { label: string; cls: string }> = {
 const CATS = ['all', 'internship', 'hackathon', 'scholarship'] as const
 type Cat = typeof CATS[number]
 
+function decodeHtml(html: string): string {
+  const txt = document.createElement('textarea')
+  txt.innerHTML = html
+  return txt.value
+}
+
 function formatDate(raw: string): string {
   if (!raw) return ''
   try { return new Date(raw).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) }
@@ -152,14 +158,14 @@ export default function Gmail() {
                         {email.action_required && (
                           <AlertCircle size={11} className="text-dm-amber shrink-0" />
                         )}
-                        <span className="text-xs font-semibold text-dm-text truncate">{email.subject}</span>
+                        <span className="text-xs font-semibold text-dm-text truncate">{decodeHtml(email.subject)}</span>
                       </div>
                       <span className={clsx('dm-badge shrink-0 text-[10px]', catStyle[email.category].cls)}>
                         {catStyle[email.category].label}
                       </span>
                     </div>
                     <div className="text-[10px] text-dm-muted font-mono mb-1.5 truncate">{email.from}</div>
-                    <div className="text-xs text-dm-muted line-clamp-2 leading-relaxed">{email.snippet}</div>
+                    <div className="text-xs text-dm-muted line-clamp-2 leading-relaxed">{decodeHtml(email.snippet)}</div>
                     <div className="text-[10px] text-dm-dim font-mono mt-2">{formatDate(email.date)}</div>
                   </button>
                 ))}
@@ -172,7 +178,7 @@ export default function Gmail() {
                   <div className="px-5 py-4 border-b border-dm-border bg-dm-surface-2/60 flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
                       <Mail size={14} className="text-dm-muted shrink-0" />
-                      <span className="text-sm font-semibold text-dm-text truncate">{active.subject}</span>
+                      <span className="text-sm font-semibold text-dm-text truncate">{decodeHtml(active.subject)}</span>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className={clsx('dm-badge text-xs', catStyle[active.category].cls)}>
@@ -196,7 +202,7 @@ export default function Gmail() {
 
                     {/* Snippet */}
                     <div className="p-4 rounded-lg bg-dm-surface-2 border border-dm-border text-sm text-dm-text leading-relaxed italic">
-                      "{active.snippet}"
+                      "{decodeHtml(active.snippet)}"
                     </div>
 
                     {/* AI summary (if available) */}

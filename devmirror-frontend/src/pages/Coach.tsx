@@ -35,7 +35,7 @@ function renderInline(text: string): (ReactElement | string)[] {
   const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)
   return parts.map((part, i) => {
     if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i} className="text-white font-semibold">{part.slice(2, -2)}</strong>
+      return <strong key={i} className="text-dm-purple-ll font-semibold">{part.slice(2, -2)}</strong>
     }
     if (part.startsWith('`') && part.endsWith('`')) {
       return (
