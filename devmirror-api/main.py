@@ -1520,8 +1520,66 @@ async def focus_compat(user_id: Optional[int] = Query(None), db: Session = Depen
         except Exception:
             pass
 
+    # Build context for AI recommendation
+    gh = _fetch_github_cached(CORAL_DEMO_GH_USERNAME)
+    lc_streak      = lc.get("streak", 0) if lc else 0
+    lc_total       = lc.get("total_solved", 0) if lc else 0
+    lc_easy        = lc.get("easy", 0) if lc else 0
+    lc_medium      = lc.get("medium", 0) if lc else 0
+    lc_hard        = lc.get("hard", 0) if lc else 0
+    lc_acceptance  = lc.get("acceptance_rate", 0) if lc else 0
+    lc_recent      = lc.get("recent", []) if lc else []
+    cf_rating      = cf.get("rating", 0) if cf else 0
+    cf_rank        = cf.get("rank", "unrated") if cf else "unrated"
+    cf_solved      = cf.get("solved", 0) if cf else 0
+    gh_commits     = gh.get("commits_week", 0) if gh else 0
+    gh_top_repo    = gh.get("top_repo", "") if gh else ""
+    cal_summary    = ", ".join(f"{e['title']} at {e['time']}" for e in calendar_today) or "no events found"
+    yt_summary     = ", ".join(f"{v['title']} ({v['channel']})" for v in youtube_watched[:3]) or "no videos found"
+    recent_lc_str  = ", ".join(f"{p['title']} ({p['difficulty']})" for p in lc_recent[:3]) if lc_recent else "none"
+
+    system_prompt = (
+        "You are DevMirror, a sharp and motivating AI coach for a software engineering student. "
+        "Analyse the data and write a focused, personalised daily brief.\n\n"
+        "FORMAT (follow exactly):\n"
+        "Based on everything I see, your #1 focus today is:\n\n"
+        "  <one clear, specific action>\n\n"
+        "Here's why this is the right move today:\n"
+        "  → <insight from LeetCode data>\n"
+        "  → <insight from Codeforces data>\n"
+        "  → <insight from calendar>\n"
+        "  → <insight from GitHub or YouTube>\n\n"
+        "<one concrete tip with specifics — e.g. a problem type, topic, or repo to touch>\n\n"
+        "<short closing motivational line>\n\n"
+        "Keep it under 200 words. Be direct, specific, and encouraging. No bullet-point lists beyond the → arrows."
+    )
+
+    user_message = (
+        f"LeetCode: {lc_total} solved (Easy {lc_easy}, Medium {lc_medium}, Hard {lc_hard}), "
+        f"{lc_streak}-day streak, {lc_acceptance:.1f}% acceptance rate. "
+        f"Recent problems: {recent_lc_str}.\n"
+        f"Codeforces: rating {cf_rating} ({cf_rank}), {cf_solved} problems solved.\n"
+        f"GitHub: {gh_commits} commits this week, top repo: {gh_top_repo or 'unknown'}.\n"
+        f"Google Calendar today: {cal_summary}.\n"
+        f"Recently liked YouTube videos: {yt_summary}.\n"
+        f"Determined priority: {priority}. Reasoning: {reasoning}."
+    )
+
+    recommendation, ai_ok = call_ai(system_prompt, user_message)
+    if not ai_ok:
+        recommendation = (
+            f"Based on everything I see, your #1 focus today is:\n\n"
+            f"  {priority}\n\n"
+            f"Here's why this is the right move today:\n"
+            f"  → {reasoning}\n"
+            f"  → LeetCode streak: {lc_streak} days — every day counts.\n"
+            f"  → Codeforces rating: {cf_rating} ({cf_rank}).\n"
+            f"  → GitHub: {gh_commits} commit(s) this week.\n\n"
+            f"Stay consistent — small daily actions compound into big results."
+        )
+
     return {
-        "recommendation": f"Focus on: {priority}. {reasoning}.",
+        "recommendation": recommendation,
         "priority_task":  priority,
         "reasoning":      reasoning,
         "calendar_today":  calendar_today,
