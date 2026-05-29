@@ -1646,6 +1646,11 @@ async def coral_calendar(db: Session = Depends(get_db)):
         events.sort(key=lambda e: e["_sort"])
         for e in events:
             e.pop("_sort", None)
+        # Coral returned stale/empty data — fall back to live Google Calendar API
+        if not events and token:
+            live = _fetch_calendar_events(token)
+            if live:
+                return {"events": live}
         return {"events": events[:30]}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
