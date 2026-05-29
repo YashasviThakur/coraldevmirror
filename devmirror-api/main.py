@@ -762,13 +762,14 @@ def _classify_videos_gemini(titles: list[str]) -> list[dict]:
         return []
     numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
     prompt = (
-        "You are a classifier that identifies YouTube videos related to software development, computer science, or tech learning.\n\n"
-        "Be INCLUSIVE. A video qualifies if it covers ANY of: programming, algorithms, data structures, web/mobile/backend dev, "
-        "ML/AI, system design, DevOps, Linux, Git, databases, networking, competitive programming, tech career, coding interviews, "
-        "or any tech tutorial. When in doubt, include it.\n\n"
+        "You are a strict classifier that identifies YouTube videos CLEARLY related to software engineering, computer science, or programming education.\n\n"
+        "A video QUALIFIES only if its title explicitly mentions: programming languages, algorithms, data structures, web/mobile/backend development, "
+        "ML/AI/data science, system design, DevOps, databases, networking, competitive programming, coding interviews, or CS fundamentals.\n\n"
+        "A video does NOT qualify if it is about: entertainment, sports, music, movies, TV shows, vlogging, cooking, gaming (unless it's about game dev), "
+        "news, comedy, religion, or any non-technical subject. When in doubt, EXCLUDE it.\n\n"
         "Video titles:\n"
         f"{numbered}\n\n"
-        "Return ONLY valid JSON — an array of objects for every qualifying video:\n"
+        "Return ONLY valid JSON — an array of objects for QUALIFYING videos only:\n"
         '[{"index": <1-based number>, "category": "<one of: Algorithms & DS | Languages | Web Dev | ML / AI | System Design | CS Fundamentals | Interview Prep>"}]\n'
         "If none qualify, return: []"
     )
@@ -897,8 +898,8 @@ def _fetch_youtube_liked(access_token: str) -> dict[str, Any]:
         else:
             for video in raw_videos:
                 cat = _classify_video_keywords(video["title"])
-                cat_counts[cat] += 1
-                if cat != "Non-Technical":
+                if cat:
+                    cat_counts[cat] += 1
                     tech_videos.append({**video, "categories": [cat]})
         return {
             "total": len(raw_videos),
