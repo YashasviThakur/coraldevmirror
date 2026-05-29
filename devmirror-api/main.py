@@ -1475,12 +1475,56 @@ async def focus_compat(user_id: Optional[int] = Query(None), db: Session = Depen
     else:
         priority = "Push at least one commit today"
         reasoning = "Building habit — even a small commit counts"
+
+    token = _get_demo_google_token(db) or ""
+
+    # Calendar: today's events formatted as {title, time, duration}
+    calendar_today: list[dict] = []
+    if token:
+        try:
+            today_utc = datetime.utcnow().strftime("%Y-%m-%d")
+            for ev in _fetch_calendar_events(token):
+                start_raw = ev.get("start", "")
+                if today_utc not in start_raw:
+                    continue
+                try:
+                    start_dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                    end_dt   = datetime.fromisoformat(ev.get("end", start_raw).replace("Z", "+00:00"))
+                    if start_dt.tzinfo is not None:
+                        start_dt = start_dt.astimezone(timezone.utc)
+                        end_dt   = end_dt.astimezone(timezone.utc)
+                    hour   = start_dt.hour % 12 or 12
+                    minute = start_dt.strftime("%M")
+                    period = "AM" if start_dt.hour < 12 else "PM"
+                    time_str = f"{hour}:{minute} {period}"
+                    mins = max(0, int((end_dt - start_dt).total_seconds() / 60))
+                    dur  = (f"{mins // 60}h" + (f" {mins % 60}m" if mins % 60 else "")) if mins >= 60 else f"{mins}m"
+                    calendar_today.append({"title": ev.get("summary", "Untitled"), "time": time_str, "duration": dur})
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # YouTube: most recently liked technical videos
+    youtube_watched: list[dict] = []
+    if token:
+        try:
+            yt = _fetch_youtube_liked(token)
+            for v in yt.get("top_videos", [])[:5]:
+                youtube_watched.append({
+                    "title":    v.get("title", ""),
+                    "channel":  v.get("channel", ""),
+                    "duration": "",
+                })
+        except Exception:
+            pass
+
     return {
         "recommendation": f"Focus on: {priority}. {reasoning}.",
         "priority_task":  priority,
         "reasoning":      reasoning,
-        "calendar_today": [],
-        "youtube_watched": [],
+        "calendar_today":  calendar_today,
+        "youtube_watched": youtube_watched,
     }
 
 
