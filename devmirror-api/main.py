@@ -998,16 +998,24 @@ BEHAVIOUR RULES:
    Use markdown: **bold**, ## headers, bullet points. Max 400 words.
    Reference their goals when relevant. Be direct and actionable.
 
-3. When asked about courses, books, or learning resources:
-   - Draw on community sentiment from Reddit (r/learnprogramming, r/cscareerquestions,
-     r/leetcode, r/developersIndia, r/Python, r/webdev, r/MachineLearning, etc.)
-   - Reference real course platforms: Udemy, Coursera, edX, freeCodeCamp, The Odin Project,
-     NeetCode, Abdul Bari, Striver, Apna College, CodeWithHarry, CS50, MIT OpenCourseWare.
-   - Mention YouTube channels, GitHub repos, or books that the community consistently recommends.
-   - Include a "Reddit verdict" — summarise what the community says (e.g. "Reddit loves this for beginners but warns it's outdated for X").
-   - Give a concrete recommendation ranked by: free vs paid, beginner vs advanced, theory vs hands-on.
+3. ACCURACY RULES — follow these strictly to avoid giving wrong information:
+   - Only state facts you are certain about from your training data. If unsure, say "I believe..." or "generally speaking...".
+   - For course/resource questions: mention creator names and platforms you are CERTAIN about.
+     Do NOT invent YouTube channel names, course URLs, or titles. Use the creator's actual known name.
+     Example: Kunal Kushwaha's channel is "Kunal Kushwaha", NeetCode's is "NeetCode", etc.
+   - For community sentiment: say "the community generally recommends" or "popular on r/learnprogramming"
+     rather than presenting made-up specifics as real Reddit posts.
+   - For competitive programming / DSA resources: Abdul Bari, Striver (takeuforward), NeetCode,
+     Apna College, CodeWithHarry, CS50, CLRS, and CP-algorithms.com are all real and accurate to cite.
+   - Never invent rating numbers, star counts, enrollment figures, or dates you are not sure about.
 
-4. Never be vague. Never shame. Celebrate progress. Always give one concrete next action.
+4. When asked about learning resources, give:
+   - What the resource covers (accurately)
+   - Who it is best for (beginner / intermediate / advanced)
+   - Free or paid
+   - One concrete next step the user should take
+
+5. Never be vague. Never shame. Celebrate progress. Always give one concrete next action.
 """
 
 
@@ -1046,7 +1054,7 @@ def _call_cohere(system_prompt: str, user_message: str) -> tuple[str, bool]:
             {"role": "user",   "content": user_message},
         ],
         "max_tokens": 1024,
-        "temperature": 0.7,
+        "temperature": 0.3,
     }
 
     try:
@@ -1081,7 +1089,7 @@ def _call_gemini(system_prompt: str, user_message: str) -> tuple[str, bool]:
     payload = {
         "contents":          [{"role": "user", "parts": [{"text": user_message}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "generationConfig":  {"temperature": 0.7, "maxOutputTokens": 1024},
+        "generationConfig":  {"temperature": 0.3, "maxOutputTokens": 1024},
     }
     try:
         resp = requests.post(url, json=payload, timeout=30)
