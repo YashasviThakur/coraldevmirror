@@ -1098,23 +1098,27 @@ def _call_gemini(system_prompt: str, user_message: str) -> tuple[str, bool]:
 
 
 def call_ai(system_prompt: str, user_message: str) -> tuple[str, bool]:
-    """Try Cohere first, fall back to Gemini. Cache successful responses for 1 hour."""
+    """Try Gemini first (generous free tier), fall back to Cohere. Cache 1 hour."""
     cache_key = f"ai:{hash(system_prompt + user_message)}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached, True
 
+    # Gemini 2.5 Flash: 1500 req/day free — use it as primary
+    if GEMINI_API_KEY:
+        text, ok = _call_gemini(system_prompt, user_message)
+        if ok:
+            _cache_set(cache_key, text, ttl_seconds=3600)
+            return text, ok
+
+    # Gemini unavailable or rate-limited — fall back to Cohere
     if COHERE_API_KEY:
         text, ok = _call_cohere(system_prompt, user_message)
         if ok:
             _cache_set(cache_key, text, ttl_seconds=3600)
             return text, ok
 
-    # Cohere unavailable or failed — fall back to Gemini
-    text, ok = _call_gemini(system_prompt, user_message)
-    if ok:
-        _cache_set(cache_key, text, ttl_seconds=3600)
-    return text, ok
+    return "Both AI services are temporarily unavailable. Please try again in a moment.", False
 
 
 # ── Pydantic request/response models ──────────────────────────────────────────
