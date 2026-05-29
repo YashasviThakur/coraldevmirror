@@ -50,6 +50,8 @@ tables:
         type: Utf8
       - name: organization
         type: Utf8
+      - name: avatar
+        type: Utf8
 
   - name: submissions
     description: "Submission history for the configured handle."
@@ -65,7 +67,7 @@ tables:
           value: "1"
         - name: count
           from: literal
-          value: "100"
+          value: "500"
     response:
       rows_path: [result]
     columns:

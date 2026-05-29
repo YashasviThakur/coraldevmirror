@@ -57,30 +57,32 @@ def get_codeforces_user(handle: str) -> Optional[dict[str, Any]]:
     Falls back to None if Coral is unavailable.
     """
     rows = _run_sql(
-        f"SELECT handle, rating, rank, max_rating, max_rank, contribution "
-        f"FROM codeforces.user_info WHERE handle = '{handle}' LIMIT 1"
+        "SELECT handle, rating, rank, max_rating, max_rank, contribution, avatar "
+        "FROM codeforces.user_info LIMIT 1",
+        env={"CODEFORCES_HANDLE": handle},
     )
     if not rows:
         return None
     return rows[0]
 
 
-def get_codeforces_submissions(handle: str, limit: int = 10) -> Optional[list[dict]]:
-    """Recent accepted Codeforces submissions via Coral SQL."""
+def get_codeforces_submissions(handle: str, limit: int = 500) -> Optional[list[dict]]:
+    """Recent Codeforces submissions via Coral SQL (all verdicts, ordered newest first)."""
     return _run_sql(
-        f"SELECT problem_name, problem_rating, verdict, language, time_seconds "
+        f"SELECT id, contest_id, problem_name, problem_index, problem_rating, verdict, submitted_at "
         f"FROM codeforces.submissions "
-        f"WHERE handle = '{handle}' AND verdict = 'OK' "
-        f"ORDER BY time_seconds DESC LIMIT {limit}"
+        f"ORDER BY submitted_at DESC LIMIT {limit}",
+        env={"CODEFORCES_HANDLE": handle},
     )
 
 
 def get_codeforces_rating_history(handle: str) -> Optional[list[dict]]:
     """Contest rating history via Coral SQL."""
     return _run_sql(
-        f"SELECT contest_name, rank, old_rating, new_rating "
-        f"FROM codeforces.rating_history WHERE handle = '{handle}' "
-        f"ORDER BY contest_id DESC LIMIT 10"
+        "SELECT contest_name, rank, old_rating, new_rating "
+        "FROM codeforces.rating_history "
+        "ORDER BY contest_id DESC LIMIT 10",
+        env={"CODEFORCES_HANDLE": handle},
     )
 
 

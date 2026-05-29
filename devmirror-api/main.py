@@ -142,35 +142,8 @@ def _fetch_github_cached(github_username: str) -> dict[str, Any]:
     return result
 
 
-def _fetch_github(github_username: str) -> dict[str, Any]:
-    """Fetch GitHub data; uses GITHUB_TOKEN env var if set for higher rate limits."""
-    headers = {"Accept": "application/vnd.github+json"}
-    if GITHUB_TOKEN:
-        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
-    username = github_username.strip().lstrip("@")
-
-    user_resp = requests.get(f"https://api.github.com/users/{username}", headers=headers, timeout=10)
-    if user_resp.status_code != 200:
-        return {"username": username, "repos": 0, "commits_week": 0, "top_repo": "", "languages": [], "contribution_grid": [], "public_repos": 0, "followers": 0, "avatar_url": ""}
-
-    gh_user = user_resp.json()
-
-    repos_resp = requests.get(
-        f"https://api.github.com/users/{username}/repos",
-        headers=headers,
-        params={"sort": "updated", "per_page": 10},
-        timeout=10,
-    )
-    repos = repos_resp.json() if repos_resp.status_code == 200 else []
-
-    events_resp = requests.get(
-        f"https://api.github.com/users/{username}/events",
-        headers=headers,
-        params={"per_page": 100},
-        timeout=10,
-    )
-    events = events_resp.json() if events_resp.status_code == 200 and isinstance(events_resp.json(), list) else []
-
+def _build_github_result(username: str, user_data: dict, repos: list, events: list) -> dict[str, Any]:
+    """Shared result builder used by both the Coral and direct-API GitHub paths."""
     week_ago = datetime.utcnow() - timedelta(days=7)
     commits_week = 0
     daily_counts: dict[str, int] = defaultdict(int)
@@ -206,11 +179,53 @@ def _fetch_github(github_username: str) -> dict[str, Any]:
         "top_repo":          top_repo,
         "languages":         languages[:5],
         "contribution_grid": grid,
-        "public_repos":      gh_user.get("public_repos", 0),
-        "followers":         gh_user.get("followers", 0),
-        "avatar_url":        gh_user.get("avatar_url", ""),
-        "_events":           events,   # passed through for LvB trend
+        "public_repos":      user_data.get("public_repos", 0) or 0,
+        "followers":         user_data.get("followers", 0) or 0,
+        "avatar_url":        user_data.get("avatar_url", "") or "",
+        "_events":           events,
     }
+
+
+def _fetch_github(github_username: str) -> dict[str, Any]:
+    """Fetch GitHub data via Coral SQL first, falling back to the direct GitHub API."""
+    username = github_username.strip().lstrip("@")
+
+    # Try Coral first
+    if GITHUB_TOKEN:
+        coral_user   = coral_client.get_github_user(GITHUB_TOKEN)
+        coral_repos  = coral_client.get_github_repos(GITHUB_TOKEN, username)
+        coral_events = coral_client.get_github_events(GITHUB_TOKEN, username)
+        if coral_repos is not None and coral_events is not None:
+            return _build_github_result(username, coral_user or {}, coral_repos, coral_events)
+
+    # Fall back to direct GitHub API
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+    user_resp = requests.get(f"https://api.github.com/users/{username}", headers=headers, timeout=10)
+    if user_resp.status_code != 200:
+        return {"username": username, "repos": 0, "commits_week": 0, "top_repo": "", "languages": [], "contribution_grid": [], "public_repos": 0, "followers": 0, "avatar_url": ""}
+
+    gh_user = user_resp.json()
+
+    repos_resp = requests.get(
+        f"https://api.github.com/users/{username}/repos",
+        headers=headers,
+        params={"sort": "updated", "per_page": 10},
+        timeout=10,
+    )
+    repos = repos_resp.json() if repos_resp.status_code == 200 else []
+
+    events_resp = requests.get(
+        f"https://api.github.com/users/{username}/events",
+        headers=headers,
+        params={"per_page": 100},
+        timeout=10,
+    )
+    events = events_resp.json() if events_resp.status_code == 200 and isinstance(events_resp.json(), list) else []
+
+    return _build_github_result(username, gh_user, repos, events)
 
 
 # ── LeetCode data pipeline ─────────────────────────────────────────────────────
@@ -342,9 +357,33 @@ def _empty_leetcode(username: str) -> dict[str, Any]:
 # ── Codeforces data pipeline ───────────────────────────────────────────────────
 
 def _fetch_codeforces(handle: str) -> dict[str, Any]:
-    # Coral is not used for Codeforces — its handle input is set once at
-    # CLI setup time and cannot change per-user request (multi-tenant issue).
-    # Direct Codeforces API is used instead — it's public and per-user.
+    coral_user = coral_client.get_codeforces_user(handle)
+    if coral_user is not None:
+        coral_subs = coral_client.get_codeforces_submissions(handle) or []
+        solved: set[str] = set()
+        recent: list[dict] = []
+        for sub in coral_subs:
+            prob_key = f"{sub.get('contest_id', '')}{sub.get('problem_index', '')}"
+            if sub.get("verdict") == "OK":
+                solved.add(prob_key)
+            if len(recent) < 10:
+                ts = sub.get("submitted_at") or 0
+                recent.append({
+                    "problem": sub.get("problem_name", ""),
+                    "verdict": sub.get("verdict", ""),
+                    "rating":  sub.get("problem_rating") or 0,
+                    "date":    datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else "",
+                })
+        return {
+            "handle":     handle,
+            "rating":     coral_user.get("rating") or 0,
+            "max_rating": coral_user.get("max_rating") or 0,
+            "rank":       coral_user.get("rank") or "unrated",
+            "max_rank":   coral_user.get("max_rank") or "unrated",
+            "solved":     len(solved),
+            "avatar":     coral_user.get("avatar") or "",
+            "recent":     recent,
+        }
     return _fetch_codeforces_direct(handle)
 
 
