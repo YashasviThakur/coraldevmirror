@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, useCallback, ReactElement } from 'react'
+import { useState, useRef, useEffect, ReactElement } from 'react'
 import {
-  Terminal, Send, Sparkles, CalendarCheck, RefreshCw,
+  Terminal, Send, CalendarCheck, RefreshCw,
   ChevronRight, LogIn, Bot,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -136,34 +136,13 @@ export default function Coach() {
   const [responses, setResponses] = useState<Map<number, ChatResponse>>(new Map())
   const [input,     setInput]     = useState('')
   const [loading,   setLoading]   = useState(false)
-  const [nudge,     setNudge]     = useState('')
-  const [loadingNudge, setLoadingNudge] = useState(false)
 
-  const bottomRef   = useRef<HTMLDivElement>(null)
-  const inputRef    = useRef<HTMLTextAreaElement>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const inputRef  = useRef<HTMLTextAreaElement>(null)
 
-  // Scroll to bottom on new message
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
-
-  // Load today's nudge on mount
-  const loadNudge = useCallback(async () => {
-    if (!userId) return
-    setLoadingNudge(true)
-    try {
-      const res = await api.ask(userId, "Give me today's single most important coding nudge in one sentence.")
-      setNudge(res.response.replace(/\n/g, ' ').slice(0, 200))
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : ''
-      if (msg.includes('User not found')) { navigate('/login'); return }
-      setNudge("Consistency beats intensity. Pick one problem and solve it completely today.")
-    } finally {
-      setLoadingNudge(false)
-    }
-  }, [userId])
-
-  useEffect(() => { if (userId) loadNudge() }, [userId, loadNudge])
 
   async function sendMessage(text: string) {
     if (!userId || !text.trim() || loading) return
@@ -227,31 +206,7 @@ export default function Coach() {
       title="AI Coach"
       subtitle="Powered by Cohere · Knows your goals · Can schedule Calendar events"
     >
-      <div className="flex flex-col h-[calc(100vh-10rem)] max-h-[820px] gap-5">
-        {/* Today's nudge */}
-        <div className="dm-card p-4 border-dm-purple/20 bg-dm-purple-dim flex items-start gap-3 shrink-0">
-          <div className="w-8 h-8 rounded-lg bg-dm-purple/20 flex items-center justify-center shrink-0">
-            <Sparkles size={15} className="text-dm-purple-ll animate-pulse-slow" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-semibold text-white">Today's Nudge</span>
-              <button
-                onClick={loadNudge}
-                disabled={loadingNudge}
-                className="ml-auto text-dm-muted hover:text-dm-text transition-colors duration-150"
-              >
-                <RefreshCw size={11} className={loadingNudge ? 'animate-spin' : ''} />
-              </button>
-            </div>
-            {loadingNudge ? (
-              <div className="h-4 bg-dm-border rounded animate-pulse w-3/4" />
-            ) : (
-              <p className="text-sm text-dm-text/80 leading-relaxed italic">"{nudge}"</p>
-            )}
-          </div>
-        </div>
-
+      <div className="flex flex-col h-[calc(100vh-7rem)]">
         {/* Chat terminal */}
         <div className="flex-1 dm-card overflow-hidden flex flex-col min-h-0">
           {/* Terminal bar */}
