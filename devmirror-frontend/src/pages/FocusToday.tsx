@@ -105,7 +105,7 @@ export default function FocusToday() {
                         <div className="flex-1 min-w-0">
                           <div className="text-xs font-medium text-dm-text truncate">{e.title}</div>
                           <div className="flex items-center gap-1.5 text-[10px] text-dm-muted font-mono mt-0.5">
-                            <Clock size={9} /> {e.time} ? {e.duration}
+                            <Clock size={9} /> {e.time} · {e.duration}
                           </div>
                         </div>
                         <ChevronRight size={12} className="text-dm-dim shrink-0" />

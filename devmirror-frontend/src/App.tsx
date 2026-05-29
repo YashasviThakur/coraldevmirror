@@ -40,7 +40,7 @@ export default function App() {
         <Routes>
           {/* Public */}
           <Route path="/"      element={<Landing />} />
-          <Route path="/login" element={<Login />} />
+          <Route path="/login" element={<Navigate to="/dashboard" replace />} />
 
           {/* Core workspace */}
           <Route path="/dashboard"   element={<Dashboard />} />

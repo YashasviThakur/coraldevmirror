@@ -109,7 +109,7 @@ function AnalysisResults({ data, totalLabel }: { data: AnalysisResult; totalLabe
                       <div className="text-[10px] text-dm-muted font-mono mt-0.5 truncate">{v.channel}</div>
                     )}
                     <div className="flex gap-1.5 mt-1.5 flex-wrap">
-                      {v.categories.slice(0, 2).map(cat => (
+                      {(v.categories ?? []).slice(0, 2).map(cat => (
                         <span key={cat} className={clsx('dm-badge text-[9px]', CATEGORY_COLORS[cat] ?? 'bg-dm-surface-3 border-dm-border text-dm-muted')}>
                           {cat}
                         </span>

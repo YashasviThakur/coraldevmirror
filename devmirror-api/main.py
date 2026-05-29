@@ -14,7 +14,7 @@ import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import requests
@@ -32,6 +32,48 @@ logger = logging.getLogger(__name__)
 from models import User, LinkedAccount, get_db, init_db
 from auth_router import router as auth_router, refresh_google_token_if_needed
 import coral_client
+
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+def _get_demo_google_token(db: Session) -> Optional[str]:
+    """
+    Return a valid Google access token for the coral demo.
+    Priority: DB user 1 → any stored Google refresh token env var → GOOGLE_ACCESS_TOKEN.
+    Caches the env-var refresh result for 55 minutes.
+    """
+    token = refresh_google_token_if_needed(1, db)
+    if token:
+        return token
+
+    cached = _cache_get("demo_google_token")
+    if cached:
+        return cached
+
+    # Check all possible refresh token env var names (Railway uses separate keys per service)
+    refresh_token = (
+        os.getenv("GOOGLE_REFRESH_TOKEN", "")
+        or os.getenv("GMAIL_REFRESH_TOKEN", "")
+        or os.getenv("GOOGLE_CALENDAR_REFRESH_TOKEN", "")
+        or os.getenv("YOUTUBE_REFRESH_TOKEN", "")
+    )
+    if refresh_token:
+        resp = requests.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "client_id":     os.getenv("GOOGLE_CLIENT_ID", ""),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
+                "refresh_token": refresh_token,
+                "grant_type":    "refresh_token",
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            new_token = resp.json().get("access_token", "")
+            if new_token:
+                _cache_set("demo_google_token", new_token, ttl_seconds=3300)
+                return new_token
+
+    return os.getenv("GOOGLE_ACCESS_TOKEN", "") or None
 
 _pool = ThreadPoolExecutor(max_workers=12)
 
@@ -441,9 +483,10 @@ def _fetch_codeforces_direct(handle: str) -> dict[str, Any]:
                 if sub.get("verdict") == "OK":
                     solved.add(prob_key)
                 if len(recent) < 10:
+                    raw_verdict = sub.get("verdict", "")
                     recent.append({
                         "problem": prob.get("name", ""),
-                        "verdict": sub.get("verdict", ""),
+                        "verdict": "AC" if raw_verdict == "OK" else raw_verdict,
                         "rating":  prob.get("rating", 0),
                         "date":    datetime.utcfromtimestamp(
                             sub.get("creationTimeSeconds", 0)
@@ -480,6 +523,11 @@ GMAIL_FILTER_QUERY = (
 )
 GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
+# Coral demo user — hardcoded handles (coraldevmirror branch)
+CORAL_DEMO_CF_HANDLE   = "yashasvithakur2005"
+CORAL_DEMO_GH_USERNAME = "YashasviThakur"
+CORAL_DEMO_LC_HANDLE   = "yashasvithakur2005"
+
 _CAT_KEYWORDS = {
     "internship":  ["internship", "intern", "summer", "hiring", "position", "opportunity", "job"],
     "hackathon":   ["hackathon", "hack", "hacks", "contest", "competition", "challenge"],
@@ -496,9 +544,9 @@ def _categorize_subject(subject: str) -> str:
 
 
 def _fetch_gmail(access_token: str) -> list[dict[str, Any]]:
-    # Try Coral SQL first — passes token via env var so each user gets their own data
+    # Try Coral SQL first
     coral_rows = coral_client.get_gmail_opportunities(access_token)
-    if coral_rows is not None:
+    if coral_rows:  # non-empty list
         results = []
         for row in coral_rows:
             subject = row.get("snippet", "")[:80]
@@ -508,13 +556,18 @@ def _fetch_gmail(access_token: str) -> list[dict[str, Any]]:
                 "from":            "",
                 "date":            "",
                 "snippet":         row.get("snippet", ""),
-                "category":        _categorize_subject(subject),
+                "category":        _categorize_subject(row.get("snippet", "")),
                 "ai_summary":      "",
                 "action_required": False,
                 "gmail_link":      f"https://mail.google.com/mail/u/0/#inbox/{row.get('id', '')}",
             })
         return results
 
+    # Coral returned None or empty — fall back to direct Gmail API using env token
+    if not access_token:
+        access_token = os.environ.get("GMAIL_ACCESS_TOKEN", "")
+    if not access_token:
+        return []
     headers = {"Authorization": f"Bearer {access_token}"}
 
     list_resp = requests.get(
@@ -775,13 +828,14 @@ def _classify_videos_gemini(titles: list[str]) -> list[dict]:
         return []
     numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
     prompt = (
-        "You are a classifier that identifies YouTube videos related to software development, computer science, or tech learning.\n\n"
-        "Be INCLUSIVE. A video qualifies if it covers ANY of: programming, algorithms, data structures, web/mobile/backend dev, "
-        "ML/AI, system design, DevOps, Linux, Git, databases, networking, competitive programming, tech career, coding interviews, "
-        "or any tech tutorial. When in doubt, include it.\n\n"
+        "You are a strict classifier that identifies YouTube videos CLEARLY related to software engineering, computer science, or programming education.\n\n"
+        "A video QUALIFIES only if its title explicitly mentions: programming languages, algorithms, data structures, web/mobile/backend development, "
+        "ML/AI/data science, system design, DevOps, databases, networking, competitive programming, coding interviews, or CS fundamentals.\n\n"
+        "A video does NOT qualify if it is about: entertainment, sports, music, movies, TV shows, vlogging, cooking, gaming (unless it's about game dev), "
+        "news, comedy, religion, or any non-technical subject. When in doubt, EXCLUDE it.\n\n"
         "Video titles:\n"
         f"{numbered}\n\n"
-        "Return ONLY valid JSON — an array of objects for every qualifying video:\n"
+        "Return ONLY valid JSON — an array of objects for QUALIFYING videos only:\n"
         '[{"index": <1-based number>, "category": "<one of: Algorithms & DS | Languages | Web Dev | ML / AI | System Design | CS Fundamentals | Interview Prep>"}]\n'
         "If none qualify, return: []"
     )
@@ -906,13 +960,13 @@ def _fetch_youtube_liked(access_token: str) -> dict[str, Any]:
                     cat = classified[idx]
                     cat_counts[cat] += 1
                     if cat != "Non-Technical":
-                        tech_videos.append({**video, "category": cat})
+                        tech_videos.append({**video, "categories": [cat]})
         else:
             for video in raw_videos:
-                cat = _classify_video_keywords(video["title"], video["channel"])
-                cat_counts[cat] += 1
-                if cat != "Non-Technical":
-                    tech_videos.append({**video, "category": cat})
+                cat = _classify_video_keywords(video["title"])
+                if cat:
+                    cat_counts[cat] += 1
+                    tech_videos.append({**video, "categories": [cat]})
         return {
             "total": len(raw_videos),
             "technical_count": len(tech_videos),
@@ -1006,10 +1060,27 @@ BEHAVIOUR RULES:
    Do NOT wrap the JSON in markdown code fences or add any other text.
 
 2. For all other messages, respond with helpful, motivating, specific coaching advice.
-   Use markdown: **bold**, ## headers, bullet points. Max 350 words.
+   Use markdown: **bold**, ## headers, bullet points. Max 400 words.
    Reference their goals when relevant. Be direct and actionable.
 
-3. Never be vague. Never shame. Celebrate progress. Always give one concrete next action.
+3. ACCURACY RULES — follow these strictly to avoid giving wrong information:
+   - Only state facts you are certain about from your training data. If unsure, say "I believe..." or "generally speaking...".
+   - For course/resource questions: mention creator names and platforms you are CERTAIN about.
+     Do NOT invent YouTube channel names, course URLs, or titles. Use the creator's actual known name.
+     Example: Kunal Kushwaha's channel is "Kunal Kushwaha", NeetCode's is "NeetCode", etc.
+   - For community sentiment: say "the community generally recommends" or "popular on r/learnprogramming"
+     rather than presenting made-up specifics as real Reddit posts.
+   - For competitive programming / DSA resources: Abdul Bari, Striver (takeuforward), NeetCode,
+     Apna College, CodeWithHarry, CS50, CLRS, and CP-algorithms.com are all real and accurate to cite.
+   - Never invent rating numbers, star counts, enrollment figures, or dates you are not sure about.
+
+4. When asked about learning resources, give:
+   - What the resource covers (accurately)
+   - Who it is best for (beginner / intermediate / advanced)
+   - Free or paid
+   - One concrete next step the user should take
+
+5. Never be vague. Never shame. Celebrate progress. Always give one concrete next action.
 """
 
 
@@ -1048,7 +1119,7 @@ def _call_cohere(system_prompt: str, user_message: str) -> tuple[str, bool]:
             {"role": "user",   "content": user_message},
         ],
         "max_tokens": 1024,
-        "temperature": 0.7,
+        "temperature": 0.3,
     }
 
     try:
@@ -1083,7 +1154,7 @@ def _call_gemini(system_prompt: str, user_message: str) -> tuple[str, bool]:
     payload = {
         "contents":          [{"role": "user", "parts": [{"text": user_message}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "generationConfig":  {"temperature": 0.7, "maxOutputTokens": 1024},
+        "generationConfig":  {"temperature": 0.3, "maxOutputTokens": 1024},
     }
     try:
         resp = requests.post(url, json=payload, timeout=30)
@@ -1101,11 +1172,23 @@ def _call_gemini(system_prompt: str, user_message: str) -> tuple[str, bool]:
 
 
 def call_ai(system_prompt: str, user_message: str) -> tuple[str, bool]:
-    """Call the appropriate AI API (Cohere preferred, fall back to Gemini)."""
-    if USE_COHERE:
-        return _call_cohere(system_prompt, user_message)
-    else:
-        return _call_gemini(system_prompt, user_message)
+    """Try Cohere first, fall back to Gemini. Cache successful responses for 1 hour."""
+    cache_key = f"ai:{hash(system_prompt + user_message)}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached, True
+
+    if COHERE_API_KEY:
+        text, ok = _call_cohere(system_prompt, user_message)
+        if ok:
+            _cache_set(cache_key, text, ttl_seconds=3600)
+            return text, ok
+
+    # Cohere unavailable or failed — fall back to Gemini
+    text, ok = _call_gemini(system_prompt, user_message)
+    if ok:
+        _cache_set(cache_key, text, ttl_seconds=3600)
+    return text, ok
 
 
 # ── Pydantic request/response models ──────────────────────────────────────────
@@ -1404,517 +1487,485 @@ async def data_youtube_liked(user_id: int = Query(...), db: Session = Depends(ge
 
 @app.post("/api/agent/ask")
 async def ask_agent(body: AskRequest, db: Session = Depends(get_db)):
-    user = _get_user_or_404(body.user_id, db)
-
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        goal_1=user.goal_1 or "Not set",
-        goal_2=user.goal_2 or "Not set",
-        goal_3=user.goal_3 or "Not set",
+        goal_1="Crack LeetCode 150",
+        goal_2="Reach CF 1600",
+        goal_3="Land a top internship",
         today=datetime.utcnow().strftime("%Y-%m-%d"),
     )
+    raw_response, _ok = call_ai(system_prompt, body.question)
 
-    raw_response, gemini_ok = call_ai(system_prompt, body.question)
-    scheduled_events: list[dict] = []
+    # Try to parse a JSON event array from the AI's response
+    events_data = _extract_json_array(raw_response)
+    if not events_data:
+        return {"response": raw_response, "scheduled_events": [], "is_schedule": False}
 
-    if gemini_ok and _is_scheduling_request(body.question):
-        events_payload = _extract_json_array(raw_response)
-        if events_payload:
-            g_token = refresh_google_token_if_needed(body.user_id, db)
-            if g_token:
-                for ev in events_payload:
-                    if "start_time" in ev and "end_time" in ev:
-                        created = _create_calendar_event(g_token, ev)
-                        scheduled_events.append({
-                            "id":      created.get("id", ""),
-                            "summary": ev.get("summary", ""),
-                            "start":   ev.get("start_time", ""),
-                            "end":     ev.get("end_time", ""),
-                        })
-            return {
-                "response":         f"I've scheduled {len(scheduled_events)} event(s) on your Google Calendar.",
-                "scheduled_events": scheduled_events,
-                "is_schedule":      True,
-            }
+    # Create each event on the user's Google Calendar
+    token = _get_demo_google_token(db) or ""
+    created: list[dict] = []
+    for ev in events_data:
+        if not ev.get("start_time") or not ev.get("end_time"):
+            continue
+        try:
+            result = _create_calendar_event(token, ev)
+            created.append({
+                "summary": ev.get("summary", "Event"),
+                "start":   ev["start_time"],
+                "end":     ev["end_time"],
+                "id":      result.get("id", ""),
+            })
+        except Exception:
+            pass
 
-    return {
-        "response":         raw_response,
-        "scheduled_events": [],
-        "is_schedule":      False,
-    }
+    if not created:
+        return {"response": raw_response, "scheduled_events": [], "is_schedule": False}
+
+    # Build a friendly human-readable confirmation
+    if len(created) == 1:
+        ev = created[0]
+        try:
+            dt = datetime.fromisoformat(ev["start"].replace("Z", "+00:00"))
+            time_str = dt.strftime("%I:%M %p on %A, %b %d").lstrip("0")
+        except Exception:
+            time_str = ev["start"][:16]
+        friendly = (
+            f"Done! I've added **{ev['summary']}** to your Google Calendar at {time_str}. "
+            "You'll see it appear in your upcoming events shortly. You've got this! 🗓️"
+        )
+    else:
+        lines = []
+        for ev in created:
+            try:
+                dt = datetime.fromisoformat(ev["start"].replace("Z", "+00:00"))
+                lines.append(f"• **{ev['summary']}** — {dt.strftime('%a %b %d, %I:%M %p').replace(' 0', ' ')}")
+            except Exception:
+                lines.append(f"• {ev['summary']}")
+        friendly = (
+            f"All set! I've added {len(created)} sessions to your Google Calendar:\n\n"
+            + "\n".join(lines)
+            + "\n\nStick to the plan and crush it! 💪"
+        )
+
+    return {"response": friendly, "scheduled_events": created, "is_schedule": True}
 
 
 # ── Backward-compatible endpoints (single-user fallback) ─────────────────────
 
 @app.get("/api/dsa")
 async def dsa_compat(user_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
-    if not user_id:
-        return {"leetcode": _empty_leetcode(""), "codeforces": _empty_codeforces("")}
-    user   = db.query(User).filter(User.id == user_id).first()
-    linked = user.linked_accounts if user else None
-    lc     = _fetch_leetcode(linked.leetcode_username) if (linked and linked.leetcode_username) else _empty_leetcode("")
-    cf     = _fetch_codeforces(linked.codeforces_handle) if (linked and linked.codeforces_handle) else _empty_codeforces("")
+    # coraldevmirror: always use Coral demo handles
+    lc = _fetch_leetcode(CORAL_DEMO_LC_HANDLE)
+    cf = _fetch_codeforces(CORAL_DEMO_CF_HANDLE)
     return {"leetcode": lc, "codeforces": cf}
 
 
 @app.get("/api/internship")
 async def internship_compat(user_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
-    if not user_id:
-        return {"summary": "No user_id provided. Please log in.", "emails": []}
-    try:
-        token  = _get_valid_google_token(user_id, db)
-        emails = _fetch_gmail(token)
-        return {"summary": f"Found {len(emails)} leads.", "emails": emails}
-    except HTTPException:
-        return {"summary": "Gmail not connected.", "emails": []}
+    # coraldevmirror: use Coral Gmail (token ignored)
+    emails = _fetch_gmail("")
+    return {"summary": f"Found {len(emails)} leads.", "emails": emails}
 
 
 @app.get("/api/growth-report")
 async def growth_report_compat(user_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
-    if not user_id:
-        return {
-            "report": "Please log in to generate your growth report.",
-            "github": {"repos": 0, "commits_week": 0, "top_repo": "", "languages": []},
-            "leetcode": {"total": 0, "easy": 0, "medium": 0, "hard": 0, "streak": 0},
-            "codeforces": {"rating": 0, "rank": "unrated", "solved": 0},
-            "calendar": {"study_hours_week": 0, "upcoming": []},
-            "generated_at": datetime.utcnow().isoformat(),
-        }
-
-    user   = db.query(User).filter(User.id == user_id).first()
-    result = await _fetch_all_data(user_id=user_id, db=db)
-    lc_raw  = result.get("leetcode") or {}
-    cf_raw  = result.get("codeforces") or {}
-    gh_raw  = result.get("github") or {}
-    cal_raw = result.get("calendar") or {}
-
-    # Normalise to match GrowthReportData interface
-    lc = {
-        "total":  lc_raw.get("total_solved", 0),
-        "easy":   lc_raw.get("easy", 0),
-        "medium": lc_raw.get("medium", 0),
-        "hard":   lc_raw.get("hard", 0),
-        "streak": lc_raw.get("streak", 0),
-    }
-    cf = {
-        "rating": cf_raw.get("rating", 0),
-        "rank":   cf_raw.get("rank", "unrated"),
-        "solved": cf_raw.get("solved", 0),
-    }
-    gh = {
-        "repos":        gh_raw.get("public_repos", gh_raw.get("repos", 0)),
-        "commits_week": gh_raw.get("commits_week", 0),
-        "top_repo":     gh_raw.get("top_repo", ""),
-        "languages":    gh_raw.get("languages", []),
-    }
-
-    # Calculate study hours and upcoming events from calendar
-    events = cal_raw.get("events", [])
-    study_kws = {"study", "learn", "practice", "leetcode", "dsa", "review", "course", "tutorial"}
-    study_hours = 0.0
-    upcoming = []
-    for ev in events[:5]:
-        title = ev.get("summary", "")
-        start = ev.get("start", "")
-        upcoming.append({"title": title, "time": start[:16].replace("T", " ") if "T" in start else start[:10]})
-        if any(kw in title.lower() for kw in study_kws) and "T" in start:
-            try:
-                sd = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                ed = datetime.fromisoformat(ev.get("end", "").replace("Z", "+00:00"))
-                study_hours += min((ed - sd).total_seconds() / 3600, 8)
-            except Exception:
-                pass
-    cal = {"study_hours_week": round(study_hours, 1), "upcoming": upcoming[:3]}
-
-    # Generate AI report via Gemini (with fallback)
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
-    goals = f"{user.goal_1 or 'Not set'} / {user.goal_2 or 'Not set'} / {user.goal_3 or 'Not set'}" if user else "Not set"
-    question = (
-        f"Generate a motivating growth report for this developer (today: {today_str}):\n\n"
-        f"GitHub: {gh['commits_week']} commits this week, top repo: {gh['top_repo'] or 'N/A'}, "
-        f"languages: {', '.join(gh['languages'][:3]) or 'N/A'}\n"
-        f"LeetCode: {lc['total']} solved ({lc['easy']} easy / {lc['medium']} medium / {lc['hard']} hard), "
-        f"{lc['streak']}-day streak\n"
-        f"Codeforces: Rating {cf['rating']} ({cf['rank']}), {cf['solved']} solved\n"
-        f"Calendar: {study_hours:.1f}h study time, {len(events)} upcoming events\n"
-        f"Goals: {goals}\n\n"
-        f"Write a personal, energetic 150-200 word coaching report. "
-        f"Reference specific numbers. End with a concrete next action. End with ∎"
+    # coraldevmirror: hardcoded demo handles, no DB lookup
+    gh, lc, cf = await asyncio.gather(
+        _run(_fetch_github_cached, CORAL_DEMO_GH_USERNAME),
+        _run(_fetch_leetcode, CORAL_DEMO_LC_HANDLE),
+        _run(_fetch_codeforces, CORAL_DEMO_CF_HANDLE),
     )
-    system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        goal_1=user.goal_1 if user else "Not set",
-        goal_2=user.goal_2 if user else "Not set",
-        goal_3=user.goal_3 if user else "Not set",
-        today=today_str,
-    )
-    report, gemini_ok = await _run(call_ai, system_prompt, question)
+    if isinstance(gh, dict):
+        gh.pop("_events", None)
 
-    # If AI failed, provide a fallback report with real stats
-    if not gemini_ok:
+    # Fetch upcoming calendar events
+    token = _get_demo_google_token(db) or ""
+    upcoming: list[dict] = []
+    if token:
+        try:
+            for ev in _fetch_calendar_events(token)[:5]:
+                start_raw = ev.get("start", "")
+                try:
+                    start_dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                    if start_dt.tzinfo is not None:
+                        start_dt = start_dt.astimezone(timezone.utc)
+                    time_label = start_dt.strftime("%b %-d, %-I:%M %p")
+                except Exception:
+                    time_label = start_raw[:16]
+                upcoming.append({"title": ev.get("summary", "Untitled"), "time": time_label})
+        except Exception:
+            pass
+
+    gh_commits  = gh.get("commits_week", 0) if gh else 0
+    gh_repos    = gh.get("public_repos", gh.get("repos", 0)) if gh else 0
+    gh_top_repo = gh.get("top_repo", "") if gh else ""
+    gh_langs    = gh.get("languages", []) if gh else []
+    lc_total    = lc.get("total_solved", 0) if lc else 0
+    lc_streak   = lc.get("streak", 0) if lc else 0
+    lc_easy     = lc.get("easy", 0) if lc else 0
+    lc_medium   = lc.get("medium", 0) if lc else 0
+    lc_hard     = lc.get("hard", 0) if lc else 0
+    cf_rating   = cf.get("rating", 0) if cf else 0
+    cf_rank     = cf.get("rank", "unrated") if cf else "unrated"
+    cf_solved   = cf.get("solved", 0) if cf else 0
+    cal_summary = ", ".join(f"{e['title']} on {e['time']}" for e in upcoming) or "no upcoming sessions"
+
+    system_prompt = (
+        "You are DevMirror, a sharp AI growth coach for a software engineering student. "
+        "Write a motivating, personalised weekly growth report in 200-250 words.\n\n"
+        "FORMAT (follow exactly):\n"
+        "<first name>, <exciting opening observation about their strongest metric>\n\n"
+        "This Week At a Glance:\n"
+        "  → GitHub: <commits and top repo insight>\n"
+        "  → LeetCode: <total solved, streak, difficulty breakdown insight>\n"
+        "  → Codeforces: <rating and rank insight>\n"
+        "  → Calendar: <upcoming sessions insight>\n\n"
+        "The Pattern I See:\n"
+        "<2-3 sentences about what the data reveals about their habits and growth trajectory>\n\n"
+        "Today's Nudge:\n"
+        "<one specific, actionable recommendation based on their weakest area>\n\n"
+        "\"<short motivational quote>\"\n\n"
+        "Keep going. <personalised closing line>."
+    )
+    user_message = (
+        f"Student: Yashasvi. "
+        f"GitHub: {gh_commits} commits this week across {gh_repos} repos, top repo: {gh_top_repo}, "
+        f"languages: {', '.join(gh_langs) or 'unknown'}. "
+        f"LeetCode: {lc_total} solved (Easy {lc_easy}, Medium {lc_medium}, Hard {lc_hard}), {lc_streak}-day streak. "
+        f"Codeforces: rating {cf_rating} ({cf_rank}), {cf_solved} problems solved. "
+        f"Upcoming calendar: {cal_summary}."
+    )
+    report, ai_ok = call_ai(system_prompt, user_message)
+    if not ai_ok:
         report = (
-            f"**Your Growth Report**\n\n"
-            f"**GitHub**: {gh['commits_week']} commits this week | "
-            f"{gh.get('repos', 0)} public repos | Top: {gh['top_repo'] or 'N/A'}\n"
-            f"**LeetCode**: {lc['total']} problems solved | "
-            f"{lc['easy']} Easy, {lc['medium']} Medium, {lc['hard']} Hard | "
-            f"{lc['streak']}-day streak\n"
-            f"**Codeforces**: Rating {cf['rating']} ({cf['rank']}) | {cf['solved']} problems solved\n"
-            f"**Study**: {study_hours:.1f}h this week | {len(events)} calendar events\n\n"
-            f"*AI analysis unavailable. Check back when the AI service is available.*"
+            f"Yashasvi, great progress this week!\n\n"
+            f"This Week At a Glance:\n"
+            f"  → GitHub: {gh_commits} commits across {gh_repos} repos. Top: {gh_top_repo}.\n"
+            f"  → LeetCode: {lc_total} solved (Easy {lc_easy}, Medium {lc_medium}, Hard {lc_hard}), {lc_streak}-day streak.\n"
+            f"  → Codeforces: rating {cf_rating} ({cf_rank}), {cf_solved} solved.\n"
+            f"  → Calendar: {cal_summary}.\n\n"
+            f"Keep going — consistency is what separates good developers from great ones."
         )
 
     return {
         "report":       report,
-        "github":       gh,
-        "leetcode":     lc,
-        "codeforces":   cf,
-        "calendar":     cal,
+        "github":       {"repos": gh_repos, "commits_week": gh_commits, "top_repo": gh_top_repo, "languages": gh_langs},
+        "leetcode":     {"total": lc_total, "easy": lc_easy, "medium": lc_medium, "hard": lc_hard, "streak": lc_streak},
+        "codeforces":   {"rating": cf_rating, "rank": cf_rank, "solved": cf_solved},
+        "calendar":     {"study_hours_week": len(upcoming), "upcoming": upcoming},
         "generated_at": datetime.utcnow().isoformat(),
     }
 
 
+
 @app.get("/api/focus")
 async def focus_compat(user_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
-    if not user_id:
-        return {
-            "recommendation": "Log in to get a personalised focus recommendation from your real data.",
-            "priority_task":  "Set up your DevMirror profile",
-            "reasoning":      "Connect GitHub, LeetCode and Codeforces to unlock AI coaching.",
-            "calendar_today": [],
-            "youtube_watched": [],
-        }
-
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        return {
-            "recommendation": "User not found. Please log in again.",
-            "priority_task":  "Log in", "reasoning": "",
-            "calendar_today": [], "youtube_watched": [],
-        }
-
-    linked      = user.linked_accounts
-    gh_username = _resolve_github_username(user_id, db)
-    g_token     = refresh_google_token_if_needed(user_id, db)
-
-    async def _lc():
-        if linked and linked.leetcode_username:
-            try: return await _run(_fetch_leetcode, linked.leetcode_username)
-            except Exception: pass
-        return None
-
-    async def _cf():
-        if linked and linked.codeforces_handle:
-            try: return await _run(_fetch_codeforces, linked.codeforces_handle)
-            except Exception: pass
-        return None
-
-    async def _gh():
-        if gh_username:
-            try:
-                d = await _run(_fetch_github_cached, gh_username)
-                d.pop("_events", None)
-                return d
-            except Exception: pass
-        return None
-
-    async def _cal():
-        if g_token:
-            try: return await _run(_fetch_calendar_events, g_token)
-            except Exception: pass
-        return []
-
-    lc, cf, gh, calendar_events = await asyncio.gather(_lc(), _cf(), _gh(), _cal())
-    calendar_events = calendar_events or []
-
-    today_str = datetime.utcnow().strftime("%A, %Y-%m-%d")
-    stats = f"Today is {today_str}.\n"
-
-    if lc:
-        stats += (
-            f"\nLeetCode: {lc['total_solved']} solved "
-            f"({lc['easy']} easy / {lc['medium']} medium / {lc['hard']} hard), "
-            f"{lc.get('streak', 0)}-day streak, "
-            f"{lc.get('acceptance_rate', 0):.1f}% acceptance rate.\n"
-        )
-        if lc.get("recent"):
-            titles = ", ".join(p["title"] for p in lc["recent"][:3])
-            stats += f"Recent problems: {titles}.\n"
-
-    if cf:
-        stats += f"\nCodeforces: Rating {cf['rating']} ({cf['rank']}), {cf.get('solved', 0)} solved.\n"
-
-    if gh:
-        stats += (
-            f"\nGitHub: {gh.get('commits_week', 0)} commits this week, "
-            f"top repo: {gh.get('top_repo', 'N/A')}, "
-            f"languages: {', '.join(gh.get('languages', [])[:3])}.\n"
-        )
-
-    # Use a ±12h window so events match regardless of user's timezone
-    now_utc = datetime.utcnow()
-    window_start = (now_utc - timedelta(hours=12)).date()
-    window_end   = (now_utc + timedelta(hours=12)).date()
-    today_events = []
-    for e in calendar_events:
-        start = e.get("start") or ""
-        try:
-            # Handle both all-day events (YYYY-MM-DD) and timed events (YYYY-MM-DDTHH:MM:SS...)
-            if "T" in start:
-                event_date = datetime.fromisoformat(start.replace("Z", "+00:00")).date()
-            else:
-                event_date = datetime.strptime(start, "%Y-%m-%d").date()
-            if window_start <= event_date <= window_end:
-                today_events.append(e)
-        except (ValueError, AttributeError, TypeError):
-            pass
-    if today_events:
-        titles = ", ".join(e["summary"] for e in today_events[:3])
-        stats += f"\nCalendar today: {titles}.\n"
-
-    question = (
-        f"Based on this developer's current data, give a focused daily recommendation:\n\n"
-        f"{stats}\n"
-        f"Goals: {user.goal_1 or 'Not set'} / {user.goal_2 or 'Not set'} / {user.goal_3 or 'Not set'}\n\n"
-        f"Give a specific, motivating focus recommendation for today. Be concrete — name "
-        f"actual problem types, repos, or skills. Keep it under 200 words. End with ∎"
-    )
-
-    system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        goal_1=user.goal_1 or "Not set",
-        goal_2=user.goal_2 or "Not set",
-        goal_3=user.goal_3 or "Not set",
-        today=today_str,
-    )
-
-    recommendation, gemini_ok = await _run(call_ai, system_prompt, question)
-
-    # If AI failed, provide a basic recommendation
-    if not gemini_ok:
-        recommendation = (
-            "**Focus Today**\n\n"
-            "AI analysis is temporarily unavailable. "
-            "Check the data below and your calendar for guidance."
-        )
-
-    # Derive priority task heuristically
+    # coraldevmirror: hardcoded demo handles, no DB lookup
+    lc = _fetch_leetcode(CORAL_DEMO_LC_HANDLE)
+    cf = _fetch_codeforces(CORAL_DEMO_CF_HANDLE)
     if lc and lc.get("streak", 0) > 0:
-        priority_task = f"Maintain your {lc['streak']}-day LeetCode streak"
+        priority = f"Maintain your {lc['streak']}-day LeetCode streak"
         reasoning = "Streak momentum is hard to rebuild — protect it"
-    elif lc and lc.get("total_solved", 0) < 50:
-        priority_task = "Solve 2 LeetCode problems (Easy → Medium)"
-        reasoning = "Foundation-building phase — consistency beats intensity"
     elif cf and cf.get("rating", 0) < 1200:
-        priority_task = "Attempt a Codeforces Div. 3 contest"
+        priority = "Attempt a Codeforces Div. 3 contest"
         reasoning = "Contests build speed and pressure-handling"
-    elif gh and gh.get("commits_week", 0) == 0:
-        priority_task = "Push at least one commit today"
-        reasoning = "Building habit — even a small commit counts"
     else:
-        priority_task = "Review and refactor your top GitHub repo"
-        reasoning = "Code quality compounds over time"
+        priority = "Push at least one commit today"
+        reasoning = "Building habit — even a small commit counts"
 
-    # Format today's calendar events
-    today_cal: list[dict] = []
-    for ev in today_events[:10]:
-        start_str = ev.get("start", "")
-        end_str   = ev.get("end", "")
+    token = _get_demo_google_token(db) or ""
+
+    # Calendar: today's events formatted as {title, time, duration}
+    calendar_today: list[dict] = []
+    if token:
         try:
-            if "T" in start_str:
-                # Timed event
-                start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-                duration = ""
-                if end_str and "T" in end_str:
-                    end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-                    mins   = int((end_dt - start_dt).total_seconds() / 60)
-                    duration = f"{mins // 60}h {mins % 60}m" if mins >= 60 else f"{mins}m"
-                today_cal.append({
-                    "title":    ev.get("summary", "Event"),
-                    "time":     start_dt.strftime("%I:%M %p"),
-                    "duration": duration,
-                })
-            else:
-                # All-day event (no T in start)
-                today_cal.append({
-                    "title":    ev.get("summary", "Event"),
-                    "time":     "All day",
+            today_utc = datetime.utcnow().strftime("%Y-%m-%d")
+            for ev in _fetch_calendar_events(token):
+                start_raw = ev.get("start", "")
+                if today_utc not in start_raw:
+                    continue
+                try:
+                    start_dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                    end_dt   = datetime.fromisoformat(ev.get("end", start_raw).replace("Z", "+00:00"))
+                    if start_dt.tzinfo is not None:
+                        start_dt = start_dt.astimezone(timezone.utc)
+                        end_dt   = end_dt.astimezone(timezone.utc)
+                    hour   = start_dt.hour % 12 or 12
+                    minute = start_dt.strftime("%M")
+                    period = "AM" if start_dt.hour < 12 else "PM"
+                    time_str = f"{hour}:{minute} {period}"
+                    mins = max(0, int((end_dt - start_dt).total_seconds() / 60))
+                    dur  = (f"{mins // 60}h" + (f" {mins % 60}m" if mins % 60 else "")) if mins >= 60 else f"{mins}m"
+                    calendar_today.append({"title": ev.get("summary", "Untitled"), "time": time_str, "duration": dur})
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # YouTube: most recently liked technical videos
+    youtube_watched: list[dict] = []
+    if token:
+        try:
+            yt = _fetch_youtube_liked(token)
+            for v in yt.get("top_videos", [])[:5]:
+                youtube_watched.append({
+                    "title":    v.get("title", ""),
+                    "channel":  v.get("channel", ""),
                     "duration": "",
                 })
         except Exception:
             pass
 
-    # Fetch recently-liked technical YouTube videos (YouTube API does not expose
-    # "liked at" timestamps, so we show the top technical liked videos instead)
-    youtube_today: list[dict] = []
-    if g_token:
-        try:
-            yt_data = _fetch_youtube_liked(g_token)
-            for video in yt_data.get("top_videos", [])[:5]:
-                youtube_today.append({
-                    "title":   video.get("title", ""),
-                    "channel": video.get("channel", ""),
-                    "duration": "—",
-                })
-        except Exception:
-            pass
+    # Build context for AI recommendation
+    gh = _fetch_github_cached(CORAL_DEMO_GH_USERNAME)
+    lc_streak      = lc.get("streak", 0) if lc else 0
+    lc_total       = lc.get("total_solved", 0) if lc else 0
+    lc_easy        = lc.get("easy", 0) if lc else 0
+    lc_medium      = lc.get("medium", 0) if lc else 0
+    lc_hard        = lc.get("hard", 0) if lc else 0
+    lc_acceptance  = lc.get("acceptance_rate", 0) if lc else 0
+    lc_recent      = lc.get("recent", []) if lc else []
+    cf_rating      = cf.get("rating", 0) if cf else 0
+    cf_rank        = cf.get("rank", "unrated") if cf else "unrated"
+    cf_solved      = cf.get("solved", 0) if cf else 0
+    gh_commits     = gh.get("commits_week", 0) if gh else 0
+    gh_top_repo    = gh.get("top_repo", "") if gh else ""
+    cal_summary    = ", ".join(f"{e['title']} at {e['time']}" for e in calendar_today) or "no events found"
+    yt_summary     = ", ".join(f"{v['title']} ({v['channel']})" for v in youtube_watched[:3]) or "no videos found"
+    recent_lc_str  = ", ".join(f"{p['title']} ({p['difficulty']})" for p in lc_recent[:3]) if lc_recent else "none"
+
+    system_prompt = (
+        "You are DevMirror, a sharp and motivating AI coach for a software engineering student. "
+        "Analyse the data and write a focused, personalised daily brief.\n\n"
+        "FORMAT (follow exactly):\n"
+        "Based on everything I see, your #1 focus today is:\n\n"
+        "  <one clear, specific action>\n\n"
+        "Here's why this is the right move today:\n"
+        "  → <insight from LeetCode data>\n"
+        "  → <insight from Codeforces data>\n"
+        "  → <insight from calendar>\n"
+        "  → <insight from GitHub or YouTube>\n\n"
+        "<one concrete tip with specifics — e.g. a problem type, topic, or repo to touch>\n\n"
+        "<short closing motivational line>\n\n"
+        "Keep it under 200 words. Be direct, specific, and encouraging. No bullet-point lists beyond the → arrows."
+    )
+
+    user_message = (
+        f"LeetCode: {lc_total} solved (Easy {lc_easy}, Medium {lc_medium}, Hard {lc_hard}), "
+        f"{lc_streak}-day streak, {lc_acceptance:.1f}% acceptance rate. "
+        f"Recent problems: {recent_lc_str}.\n"
+        f"Codeforces: rating {cf_rating} ({cf_rank}), {cf_solved} problems solved.\n"
+        f"GitHub: {gh_commits} commits this week, top repo: {gh_top_repo or 'unknown'}.\n"
+        f"Google Calendar today: {cal_summary}.\n"
+        f"Recently liked YouTube videos: {yt_summary}.\n"
+        f"Determined priority: {priority}. Reasoning: {reasoning}."
+    )
+
+    recommendation, ai_ok = call_ai(system_prompt, user_message)
+    if not ai_ok:
+        recommendation = (
+            f"Based on everything I see, your #1 focus today is:\n\n"
+            f"  {priority}\n\n"
+            f"Here's why this is the right move today:\n"
+            f"  → {reasoning}\n"
+            f"  → LeetCode streak: {lc_streak} days — every day counts.\n"
+            f"  → Codeforces rating: {cf_rating} ({cf_rank}).\n"
+            f"  → GitHub: {gh_commits} commit(s) this week.\n\n"
+            f"Stay consistent — small daily actions compound into big results."
+        )
 
     return {
-        "recommendation":  recommendation,
-        "priority_task":   priority_task,
-        "reasoning":       reasoning,
-        "calendar_today":  today_cal,
-        "youtube_watched": youtube_today,
+        "recommendation": recommendation,
+        "priority_task":  priority,
+        "reasoning":      reasoning,
+        "calendar_today":  calendar_today,
+        "youtube_watched": youtube_watched,
     }
+
 
 
 @app.get("/api/learn-vs-build")
 async def lvb_compat(user_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
-    if not user_id:
-        return {
-            "analysis":            "Connect your accounts to see your real learn/build balance.",
-            "learn_score":         50,
-            "build_score":         50,
-            "balance":             "balanced",
-            "github_commits_week": 0,
-            "youtube_hours_week":  0,
-            "study_hours_week":    0,
-            "trend":               [],
-        }
+    # coraldevmirror: hardcoded demo handles, no DB lookup
+    gh = _fetch_github_cached(CORAL_DEMO_GH_USERNAME)
+    lc = _fetch_leetcode(CORAL_DEMO_LC_HANDLE)
+    commits = gh.get("commits_week", 0) if gh else 0
+    solved  = lc.get("total_solved", 0) if lc else 0
+    lc_streak = lc.get("streak", 0) if lc else 0
 
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        return {
-            "analysis": "User not found.", "learn_score": 50, "build_score": 50,
-            "balance": "balanced", "github_commits_week": 0,
-            "youtube_hours_week": 0, "study_hours_week": 0, "trend": [],
-        }
+    # Score: build from commits (cap at 100), learn from LC problems solved (cap at 100)
+    build_score = min(100, commits * 5)
+    learn_score = min(100, solved * 4)
+    total = learn_score + build_score or 1
+    learn_pct = round(learn_score / total * 100)
+    build_pct  = 100 - learn_pct
+    balance = "balanced" if abs(learn_pct - build_pct) < 15 else ("learning_heavy" if learn_pct > build_pct else "building_heavy")
 
-    linked = user.linked_accounts
-
-    commits_week    = 0
-    study_hours     = 0.0
-    lc_streak       = 0
-    lc_solved       = 0
-
-    gh_events: list[dict] = []
-    gh_username = _resolve_github_username(user_id, db)
-    if gh_username:
-        try:
-            gh = _fetch_github_cached(gh_username)
-            commits_week = gh.get("commits_week", 0)
-            gh_events = gh.get("_events", [])
-        except Exception:
-            pass
-
-    if linked and linked.leetcode_username:
-        try:
-            lc = _fetch_leetcode(linked.leetcode_username)
-            lc_streak = lc.get("streak", 0)
-            lc_solved = lc.get("total_solved", 0)
-        except Exception:
-            pass
-
-    g_token = refresh_google_token_if_needed(user_id, db)
-    if g_token:
-        try:
-            events = _fetch_calendar_events(g_token)
-            study_kws = {"study", "learn", "practice", "leetcode", "dsa", "review", "read", "course", "tutorial", "revision"}
-            for ev in events:
-                if any(kw in ev.get("summary", "").lower() for kw in study_kws):
-                    s, e = ev.get("start", ""), ev.get("end", "")
-                    if s and e and "T" in s:
-                        try:
-                            sd = datetime.fromisoformat(s.replace("Z", "+00:00"))
-                            ed = datetime.fromisoformat(e.replace("Z", "+00:00"))
-                            study_hours += min((ed - sd).total_seconds() / 3600, 8)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-
-    # Score calculation
-    build_pts = commits_week * 10
-    learn_pts = lc_streak * 5 + study_hours * 8
-    total_pts = max(build_pts + learn_pts, 1)
-    build_score = int(max(10, min(90, (build_pts / total_pts) * 100)))
-    learn_score = 100 - build_score
-
-    if build_score < 35:
-        balance = "learning_heavy"
-    elif build_score > 65:
-        balance = "building_heavy"
-    else:
-        balance = "balanced"
-
-    # Real 6-week trend — derived from GitHub push events
-    today_dt = datetime.utcnow()
-    weekly_commits: dict[int, int] = defaultdict(int)   # weeks_ago → commit count
-    for e in gh_events:
-        if not isinstance(e, dict) or e.get("type") != "PushEvent":
-            continue
-        try:
-            created = datetime.strptime(e["created_at"][:10], "%Y-%m-%d")
-            weeks_ago = (today_dt.date() - created.date()).days // 7
-            if 0 <= weeks_ago < 6:
-                weekly_commits[weeks_ago] += 1
-        except (KeyError, ValueError):
-            pass
-
+    # Generate 6-week trend with slight variation around current scores
+    import random; random.seed(42)
+    now = datetime.utcnow()
     trend = []
-    for weeks_ago in range(5, -1, -1):
-        week_start = today_dt - timedelta(weeks=weeks_ago)
-        label = f"{week_start.strftime('%b')} W{(week_start.day - 1) // 7 + 1}"
-        wc = weekly_commits.get(weeks_ago, 0)
-        w_build_pts = wc * 10
-        w_learn_pts = lc_streak * 2 if weeks_ago == 0 else 0
-        w_total = max(w_build_pts + w_learn_pts, 1)
-        w_build = int(max(10, min(90, (w_build_pts / w_total) * 100))) if (w_build_pts + w_learn_pts) > 0 else build_score
-        trend.append({"week": label, "learn": 100 - w_build, "build": w_build})
+    for i in range(5, -1, -1):
+        wk = now - timedelta(weeks=i)
+        label = f"{wk.strftime('%b')} W{(wk.day - 1) // 7 + 1}"
+        var = random.randint(-8, 8)
+        lp = max(5, min(95, learn_pct + var + (i * 2)))
+        trend.append({"week": label, "learn": lp, "build": 100 - lp})
 
-    question = (
-        f"Analyze this developer's learning vs building balance:\n"
-        f"- GitHub commits this week: {commits_week}\n"
-        f"- LeetCode streak: {lc_streak} days, {lc_solved} total solved\n"
-        f"- Study hours from calendar: {study_hours:.1f}h\n"
-        f"- Learn score: {learn_score}%, Build score: {build_score}% → {balance}\n"
-        f"- Goals: {user.goal_1 or 'Not set'} / {user.goal_2 or 'Not set'} / {user.goal_3 or 'Not set'}\n\n"
-        f"Give a concise 3-4 sentence analysis. Be specific and actionable. End with ∎"
+    system_prompt = (
+        "You are DevMirror, an AI coach analysing a developer's learn vs build balance. "
+        "Write an insightful 120-150 word analysis.\n\n"
+        "FORMAT:\n"
+        "<opening line about their balance status>\n\n"
+        "This week you spent roughly <X hours/sessions> learning (LeetCode + study) vs <Y> building (GitHub commits).\n\n"
+        "That's a <ratio> ratio — <judgement at their stage>. The risk zone is when it flips to 4:1 or higher.\n\n"
+        "Key observation: <specific insight about what the data shows>\n\n"
+        "Action: <one concrete next-week suggestion>\n\n"
+        "<short closing motivational line>."
     )
-
-    system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        goal_1=user.goal_1 or "Not set",
-        goal_2=user.goal_2 or "Not set",
-        goal_3=user.goal_3 or "Not set",
-        today=datetime.utcnow().strftime("%Y-%m-%d"),
+    user_message = (
+        f"GitHub commits this week: {commits}. LeetCode problems solved total: {solved} ({lc_streak}-day streak). "
+        f"Learn score: {learn_pct}%, Build score: {build_pct}%. Balance: {balance}."
     )
-
-    analysis, gemini_ok = call_ai(system_prompt, question)
-
-    # If Gemini failed, provide a fallback analysis
-    if not gemini_ok:
-        if balance == "learning_heavy":
-            analysis = (
-                f"You're **learning-focused** ({learn_score}% learn vs {build_score}% build). "
-                f"Consider starting a small project to apply knowledge."
-            )
-        elif balance == "building_heavy":
-            analysis = (
-                f"You're **build-focused** ({build_score}% build vs {learn_score}% learn). "
-                f"Remember to dedicate time for learning and skill expansion."
-            )
-        else:
-            analysis = (
-                f"You have a **balanced** learning and building schedule ({learn_score}% learn, {build_score}% build). "
-                f"Keep maintaining this healthy mix."
-            )
+    analysis, ai_ok = call_ai(system_prompt, user_message)
+    if not ai_ok:
+        analysis = (
+            f"Your learn/build balance is {balance.replace('_', ' ')} this week.\n\n"
+            f"You made {commits} commits and solved {solved} LeetCode problems.\n\n"
+            f"Learn: {learn_pct}% · Build: {build_pct}%\n\n"
+            f"Action: {'Push one more commit this week.' if learn_pct > 60 else 'Try one more LeetCode problem today.'}"
+        )
 
     return {
         "analysis":            analysis,
-        "learn_score":         learn_score,
-        "build_score":         build_score,
+        "learn_score":         learn_pct,
+        "build_score":         build_pct,
         "balance":             balance,
-        "github_commits_week": commits_week,
-        "youtube_hours_week":  0.0,
-        "study_hours_week":    round(study_hours, 1),
+        "github_commits_week": commits,
+        "youtube_hours_week":  0,
+        "study_hours_week":    solved,
         "trend":               trend,
+    }
+
+
+
+
+@app.get("/api/coral/youtube")
+async def coral_youtube(db: Session = Depends(get_db)):
+    """YouTube liked videos via Coral SQL; falls back to demo user's Google token if Coral unavailable."""
+    try:
+        token = _get_demo_google_token(db) or ""
+        result = _fetch_youtube_liked(token)
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/coral/gmail")
+async def coral_gmail(db: Session = Depends(get_db)):
+    """Gmail opportunities via Coral SQL; falls back to demo user's Google token if Coral unavailable."""
+    try:
+        token = _get_demo_google_token(db) or ""
+        emails = _fetch_gmail(token)
+        return {"summary": f"Found {len(emails)} developer opportunity email(s).", "emails": emails}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/coral/codeforces")
+async def coral_codeforces():
+    """Codeforces data via Coral SQL — no auth required."""
+    try:
+        return _fetch_codeforces(CORAL_DEMO_CF_HANDLE)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/coral/github")
+async def coral_github():
+    """GitHub data via direct API — no auth required."""
+    try:
+        result = _fetch_github_cached(CORAL_DEMO_GH_USERNAME)
+        result.pop("_events", None)
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/coral/leetcode")
+async def coral_leetcode():
+    """LeetCode data via direct API — no auth required."""
+    try:
+        return _fetch_leetcode(CORAL_DEMO_LC_HANDLE)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/coral/calendar")
+async def coral_calendar(db: Session = Depends(get_db)):
+    """Google Calendar events — always fetches live from Google Calendar API.
+    Coral SQL is skipped because it caches stale data and misses newly created events."""
+    try:
+        token = _get_demo_google_token(db) or ""
+        if not token:
+            return {"events": []}
+        events = _fetch_calendar_events(token)
+        return {"events": events}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/coral/all")
+async def coral_all():
+    """All data via Coral SQL + direct APIs — no auth required."""
+    gh, lc, cf, gmail_raw, cal_rows = await asyncio.gather(
+        _run(_fetch_github_cached, CORAL_DEMO_GH_USERNAME),
+        _run(_fetch_leetcode, CORAL_DEMO_LC_HANDLE),
+        _run(_fetch_codeforces, CORAL_DEMO_CF_HANDLE),
+        _run(_fetch_gmail, ""),
+        _run(coral_client.get_calendar_events, "", "", ""),
+    )
+    if isinstance(gh, dict):
+        gh.pop("_events", None)
+    cal_events = None
+    if cal_rows:
+        cal_events = [
+            {
+                "id":          r.get("id", ""),
+                "summary":     r.get("summary", ""),
+                "description": r.get("description", ""),
+                "start":       str(r.get("start_date_time") or r.get("start_date") or ""),
+                "end":         str(r.get("end_date_time") or r.get("end_date") or ""),
+            }
+            for r in cal_rows
+        ]
+    return {
+        "github":       gh,
+        "leetcode":     lc,
+        "codeforces":   cf,
+        "gmail":        gmail_raw,
+        "calendar":     {"events": cal_events} if cal_events else None,
+        "generated_at": datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/coral/user")
+async def coral_user():
+    """Hardcoded demo user profile — no auth required."""
+    return {
+        "id":                1,
+        "name":              "Yashasvi Thakur",
+        "email":             "yashasvithakur2005@gmail.com",
+        "account_type":      "personal",
+        "institution_name":  None,
+        "goal_1":            "Crack LeetCode 150",
+        "goal_2":            "Reach CF 1600",
+        "goal_3":            "Land a top internship",
+        "created_at":        None,
+        "has_google":        True,
+        "has_github":        True,
+        "github_username":   CORAL_DEMO_GH_USERNAME,
+        "codeforces_handle": CORAL_DEMO_CF_HANDLE,
+        "leetcode_username": CORAL_DEMO_LC_HANDLE,
     }
 
 

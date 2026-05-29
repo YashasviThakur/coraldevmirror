@@ -209,7 +209,7 @@ export default function Dashboard() {
 
   const now      = new Date()
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'
-  const userLabel = profile?.email ? profile.email.split('@')[0] : `User #${userId}`
+  const userLabel = profile?.name ?? (profile?.email ? profile.email.split('@')[0] : `User #${userId}`)
 
   // -- Not logged in state ------------------------------------------------------
   if (!loading && !userId) {
@@ -235,13 +235,9 @@ export default function Dashboard() {
       subtitle={`${greeting}, ${userLabel} · ${now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}`}
       actions={
         <div className="flex items-center gap-2">
-          {savingGoals && <span className="text-xs text-dm-muted font-mono animate-pulse">Saving?</span>}
-          <button
-            onClick={() => setShowSettings(v => !v)}
-            className={clsx('dm-btn-ghost flex items-center gap-2 text-sm', showSettings && 'border-dm-purple/50 text-dm-purple-ll')}
-          >
-            <Settings2 size={14} /> Accounts
-          </button>
+          <span className="text-xs font-mono px-2 py-1 rounded border border-dm-purple/40 text-dm-purple-ll bg-dm-purple-dim">
+            ⚡ Powered by Coral SQL
+          </span>
           <button onClick={handleRefresh} disabled={refreshing || loading} className="dm-btn-ghost flex items-center gap-2 text-sm">
             <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /> Refresh
           </button>
@@ -325,9 +321,9 @@ export default function Dashboard() {
                     Top: <span className="text-dm-purple-ll font-mono">{github.top_repo}</span>
                   </span>
                 </div>
-                {github.languages.length > 0 && (
+                {(github.languages ?? []).length > 0 && (
                   <div className="flex gap-1.5 flex-wrap mt-3">
-                    {github.languages.map(l => (
+                    {(github.languages ?? []).map(l => (
                       <span key={l} className="dm-badge-purple text-[10px]">{l}</span>
                     ))}
                   </div>
@@ -373,11 +369,11 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {codeforces.recent.length > 0 && (
+                {(codeforces.recent ?? []).length > 0 && (
                   <div className="space-y-1.5 border-t border-dm-border pt-3">
-                    {codeforces.recent.slice(0, 4).map((s, i) => (
+                    {(codeforces.recent ?? []).slice(0, 4).map((s, i) => (
                       <div key={i} className="flex items-center gap-2">
-                        {s.verdict === 'OK'
+                        {s.verdict === 'AC'
                           ? <CheckCircle2 size={11} className="text-dm-green shrink-0" />
                           : <XCircle     size={11} className="text-red-400 shrink-0" />
                         }

@@ -43,25 +43,27 @@ export default function Calendar() {
   const [messages, setMessages] = useState<{ role: 'user' | 'ai'; text: string }[]>([
     { role: 'ai', text: 'Hi! Tell me what to schedule — e.g. "Plan 3 DSA sessions this week" or "Block 2 hours for project work tomorrow evening".' },
   ])
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const messagesRef = useRef<HTMLDivElement>(null)
 
-  async function loadEvents() {
+  async function loadEvents(silent = false) {
     if (!userId) return
-    setLoading(true)
+    if (!silent) setLoading(true)
     try {
       const data = await api.calendar(userId)
       setEvents(data.events)
     } catch {
-      setEvents([])
+      if (!silent) setEvents([])
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
   useEffect(() => { loadEvents() }, [userId])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (messagesRef.current) {
+      messagesRef.current.scrollTop = messagesRef.current.scrollHeight
+    }
   }, [messages])
 
   async function handleSend() {
@@ -74,11 +76,19 @@ export default function Calendar() {
       const res = await api.ask(userId, question)
       setMessages(m => [...m, { role: 'ai', text: res.response }])
       if (res.is_schedule && res.scheduled_events.length > 0) {
-        setMessages(m => [...m, {
-          role: 'ai',
-          text: `Created ${res.scheduled_events.length} event(s) on your calendar.`,
-        }])
-        await loadEvents()
+        // Optimistically add new events to the list immediately
+        setEvents(prev => {
+          const newEvs: CalendarEvent[] = res.scheduled_events.map(ev => ({
+            id:          ev.id || crypto.randomUUID(),
+            summary:     ev.summary,
+            description: '',
+            start:       ev.start,
+            end:         ev.end,
+          }))
+          return [...prev, ...newEvs].sort((a, b) => a.start.localeCompare(b.start))
+        })
+        // Background sync after 3 s — silent so it doesn't flash a spinner
+        setTimeout(() => loadEvents(true), 3000)
       }
     } catch (e: unknown) {
       setMessages(m => [...m, { role: 'ai', text: `Error: ${e instanceof Error ? e.message : 'Something went wrong.'}` }])
@@ -95,7 +105,7 @@ export default function Calendar() {
       title="Calendar"
       subtitle="AI-powered schedule planning · Google Calendar"
       actions={
-        <button onClick={loadEvents} disabled={loading} className="dm-btn-ghost flex items-center gap-2 text-sm">
+        <button onClick={() => loadEvents()} disabled={loading} className="dm-btn-ghost flex items-center gap-2 text-sm">
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
         </button>
       }
@@ -160,7 +170,7 @@ export default function Calendar() {
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+            <div ref={messagesRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed ${
@@ -183,7 +193,6 @@ export default function Calendar() {
                   </div>
                 </div>
               )}
-              <div ref={bottomRef} />
             </div>
 
             {/* Quick prompts */}

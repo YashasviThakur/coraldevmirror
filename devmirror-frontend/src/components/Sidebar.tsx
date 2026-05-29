@@ -85,10 +85,10 @@ export default function Sidebar() {
           <>
             <div className="flex items-center gap-3">
               <div className="w-7 h-7 bg-white/15 flex items-center justify-center text-white text-xs font-bold shrink-0">
-                {profile?.email?.[0]?.toUpperCase() ?? 'U'}
+                {(profile?.name ?? profile?.email)?.[0]?.toUpperCase() ?? 'U'}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-xs font-medium text-white/80 truncate">{profile?.email ?? `User #${userId}`}</div>
+                <div className="text-xs font-medium text-white/80 truncate">{profile?.name ?? profile?.email ?? `User #${userId}`}</div>
                 <div className="text-[10px] text-white/30 font-mono">Google connected</div>
               </div>
               <div className="w-1.5 h-1.5 rounded-full bg-dm-green shrink-0" />

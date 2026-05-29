@@ -1,0 +1,252 @@
+name: google_calendar
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Google Calendar calendars, events, user settings, and color palettes.
+inputs:
+  GOOGLE_CALENDAR_API_BASE:
+    kind: variable
+    default: https://www.googleapis.com/calendar/v3
+    hint: Base URL for the Google Calendar API.
+  GOOGLE_CALENDAR_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      OAuth 2.0 access token with calendar.readonly scope.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Calendar
+          description: Use Google OAuth to retrieve a Calendar access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_CALENDAR_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/calendar.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Calendar OAuth access token.
+
+base_url: "{{input.GOOGLE_CALENDAR_API_BASE}}"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_CALENDAR_ACCESS_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT summary, start_date_time FROM google_calendar.events LIMIT 5
+
+tables:
+
+  - name: calendars
+    description: Calendars on the authenticated user's calendar list
+    request:
+      method: GET
+      path: /users/me/calendarList
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 100
+        max: 250
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        expr:
+          kind: path
+          path: [id]
+      - name: events_calendar_id
+        type: Utf8
+        expr:
+          kind: replace
+          expr:
+            kind: path
+            path: [id]
+          from: "#"
+          to: "%23"
+      - name: summary
+        type: Utf8
+        expr:
+          kind: path
+          path: [summary]
+      - name: description
+        type: Utf8
+        expr:
+          kind: path
+          path: [description]
+      - name: time_zone
+        type: Utf8
+        expr:
+          kind: path
+          path: [timeZone]
+      - name: access_role
+        type: Utf8
+        expr:
+          kind: path
+          path: [accessRole]
+      - name: primary
+        type: Boolean
+        expr:
+          kind: path
+          path: [primary]
+
+  - name: events
+    description: Events on a Google Calendar
+    filters:
+      - name: calendar_id
+        required: false
+      - name: time_min
+        required: false
+      - name: time_max
+        required: false
+      - name: q
+        required: false
+        mode: search
+      - name: single_events
+        required: false
+    request:
+      method: GET
+      path: /calendars/{{filter.calendar_id|primary}}/events
+      query:
+        - name: timeMin
+          from: filter
+          key: time_min
+        - name: timeMax
+          from: filter
+          key: time_max
+        - name: q
+          from: filter
+          key: q
+        - name: singleEvents
+          from: filter_bool
+          key: single_events
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 250
+        max: 2500
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        expr:
+          kind: path
+          path: [id]
+      - name: summary
+        type: Utf8
+        expr:
+          kind: path
+          path: [summary]
+      - name: description
+        type: Utf8
+        expr:
+          kind: path
+          path: [description]
+      - name: location
+        type: Utf8
+        expr:
+          kind: path
+          path: [location]
+      - name: status
+        type: Utf8
+        expr:
+          kind: path
+          path: [status]
+      - name: html_link
+        type: Utf8
+        expr:
+          kind: path
+          path: [htmlLink]
+      - name: start_date_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [start, dateTime]
+      - name: start_date
+        type: Utf8
+        expr:
+          kind: path
+          path: [start, date]
+      - name: end_date_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [end, dateTime]
+      - name: end_date
+        type: Utf8
+        expr:
+          kind: path
+          path: [end, date]
+      - name: hangout_link
+        type: Utf8
+        expr:
+          kind: path
+          path: [hangoutLink]
+      - name: attendees_emails
+        type: Utf8
+        expr:
+          kind: join_array_path
+          path: [attendees]
+          item_path: [email]
+          separator: ","
+      - name: recurring_event_id
+        type: Utf8
+        expr:
+          kind: path
+          path: [recurringEventId]
+
+  - name: settings
+    description: Google Calendar settings for the authenticated user
+    request:
+      method: GET
+      path: /users/me/settings
+    response:
+      rows_path: [items]
+    columns:
+      - name: id
+        type: Utf8
+        expr:
+          kind: path
+          path: [id]
+      - name: value
+        type: Utf8
+        expr:
+          kind: path
+          path: [value]

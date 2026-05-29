@@ -90,14 +90,12 @@ def get_codeforces_rating_history(handle: str) -> Optional[list[dict]]:
 
 def get_gmail_opportunities(access_token: str) -> Optional[list[dict]]:
     """
-    Query Gmail for internship/hackathon/scholarship threads via Coral SQL.
+    Query Gmail for recent threads via Coral SQL.
     Passes the OAuth token via environment variable so it stays out of the query string.
     """
     env = {"GMAIL_ACCESS_TOKEN": access_token}
     return _run_sql(
-        "SELECT id, snippet FROM gmail.threads "
-        "WHERE q = 'subject:(internship OR hackathon OR scholarship) is:unread' "
-        "LIMIT 20",
+        "SELECT id, snippet FROM gmail.threads LIMIT 50",
         env=env,
     )
 
@@ -134,6 +132,19 @@ def get_youtube_channel_stats(access_token: str) -> Optional[dict[str, Any]]:
         env=env,
     )
     return rows[0] if rows else None
+
+
+# ── Google Calendar ────────────────────────────────────────────────────────────
+
+def get_calendar_events(access_token: str, time_min: str = "", time_max: str = "") -> Optional[list[dict]]:
+    """Upcoming calendar events via Coral SQL."""
+    env = {"GOOGLE_CALENDAR_ACCESS_TOKEN": access_token}
+    return _run_sql(
+        "SELECT id, summary, description, start_date_time, end_date_time, location, html_link "
+        "FROM google_calendar.events "
+        "ORDER BY start_date_time ASC LIMIT 50",
+        env=env,
+    )
 
 
 # ── GitHub ─────────────────────────────────────────────────────────────────────
