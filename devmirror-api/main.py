@@ -1042,7 +1042,7 @@ def _call_cohere(system_prompt: str, user_message: str) -> tuple[str, bool]:
     }
 
     payload = {
-        "model": "command-r-08-2024",
+        "model": "command-r",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_message},
