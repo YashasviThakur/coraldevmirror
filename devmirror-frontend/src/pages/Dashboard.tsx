@@ -373,7 +373,7 @@ export default function Dashboard() {
                   <div className="space-y-1.5 border-t border-dm-border pt-3">
                     {(codeforces.recent ?? []).slice(0, 4).map((s, i) => (
                       <div key={i} className="flex items-center gap-2">
-                        {s.verdict === 'OK'
+                        {s.verdict === 'AC'
                           ? <CheckCircle2 size={11} className="text-dm-green shrink-0" />
                           : <XCircle     size={11} className="text-red-400 shrink-0" />
                         }
