@@ -303,6 +303,11 @@ def _fetch_leetcode(username: str) -> dict[str, Any]:
         }
     }
     """
+    totals_query = """
+    query {
+        allQuestionsCount { difficulty count }
+    }
+    """
     lc_headers = {
         "Content-Type": "application/json",
         "Referer":      "https://leetcode.com",
@@ -321,6 +326,12 @@ def _fetch_leetcode(username: str) -> dict[str, Any]:
             headers=lc_headers,
             timeout=12,
         )
+        totals_resp = requests.post(
+            "https://leetcode.com/graphql",
+            json={"query": totals_query},
+            headers=lc_headers,
+            timeout=12,
+        )
     except Exception:
         return _empty_leetcode(username)
 
@@ -335,6 +346,17 @@ def _fetch_leetcode(username: str) -> dict[str, Any]:
     tot_counts = {s["difficulty"]: s["count"] for s in data["submitStats"].get("totalSubmissionNum", [])}
     calendar   = data.get("userCalendar") or {}
     profile    = data.get("profile") or {}
+
+    # Total available problems per difficulty from LeetCode
+    lc_totals: dict[str, int] = {"Easy": 814, "Medium": 1715, "Hard": 741}  # fallback
+    try:
+        if totals_resp.status_code == 200:
+            raw_totals = (totals_resp.json().get("data") or {}).get("allQuestionsCount") or []
+            fetched = {t["difficulty"]: t["count"] for t in raw_totals}
+            if fetched.get("Easy") and fetched.get("Medium") and fetched.get("Hard"):
+                lc_totals = fetched
+    except Exception:
+        pass
 
     # Compute real acceptance rate from total vs accepted submission counts
     ac_all  = ac_counts.get("All", 0)
@@ -365,6 +387,9 @@ def _fetch_leetcode(username: str) -> dict[str, Any]:
         "easy":              ac_counts.get("Easy", 0),
         "medium":            ac_counts.get("Medium", 0),
         "hard":              ac_counts.get("Hard", 0),
+        "easy_total":        lc_totals.get("Easy", 814),
+        "medium_total":      lc_totals.get("Medium", 1715),
+        "hard_total":        lc_totals.get("Hard", 741),
         "streak":            streak,
         "total_active_days": calendar.get("totalActiveDays", 0),
         "acceptance_rate":   acceptance_rate,
@@ -376,7 +401,8 @@ def _fetch_leetcode(username: str) -> dict[str, Any]:
 def _empty_leetcode(username: str) -> dict[str, Any]:
     return {
         "username": username, "total_solved": 0, "easy": 0, "medium": 0,
-        "hard": 0, "streak": 0, "total_active_days": 0, "acceptance_rate": 0.0,
+        "hard": 0, "easy_total": 814, "medium_total": 1715, "hard_total": 741,
+        "streak": 0, "total_active_days": 0, "acceptance_rate": 0.0,
         "ranking": 0, "recent": [],
     }
 

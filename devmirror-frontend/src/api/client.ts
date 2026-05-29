@@ -64,6 +64,9 @@ export interface LeetCodeData {
   easy:              number
   medium:            number
   hard:              number
+  easy_total:        number
+  medium_total:      number
+  hard_total:        number
   streak:            number
   total_active_days: number
   acceptance_rate:   number
@@ -164,7 +167,8 @@ export interface HealthData {
 export interface DSAData {
   leetcode: {
     username: string; total_solved: number; easy: number; medium: number
-    hard: number; streak: number; acceptance_rate: number
+    hard: number; easy_total: number; medium_total: number; hard_total: number
+    streak: number; acceptance_rate: number
     recent: { title: string; difficulty: string; date: string }[]
   }
   codeforces: {
