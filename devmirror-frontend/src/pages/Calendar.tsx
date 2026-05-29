@@ -74,11 +74,19 @@ export default function Calendar() {
       const res = await api.ask(userId, question)
       setMessages(m => [...m, { role: 'ai', text: res.response }])
       if (res.is_schedule && res.scheduled_events.length > 0) {
-        setMessages(m => [...m, {
-          role: 'ai',
-          text: `Created ${res.scheduled_events.length} event(s) on your calendar.`,
-        }])
-        await loadEvents()
+        // Optimistically add new events to the list immediately
+        setEvents(prev => {
+          const newEvs: CalendarEvent[] = res.scheduled_events.map(ev => ({
+            id:          ev.id || crypto.randomUUID(),
+            summary:     ev.summary,
+            description: '',
+            start:       ev.start,
+            end:         ev.end,
+          }))
+          return [...prev, ...newEvs].sort((a, b) => a.start.localeCompare(b.start))
+        })
+        // Background sync after 3 s to get the authoritative Google Calendar data
+        setTimeout(() => loadEvents(), 3000)
       }
     } catch (e: unknown) {
       setMessages(m => [...m, { role: 'ai', text: `Error: ${e instanceof Error ? e.message : 'Something went wrong.'}` }])

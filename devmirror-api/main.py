@@ -1837,52 +1837,14 @@ async def coral_leetcode():
 
 @app.get("/api/coral/calendar")
 async def coral_calendar(db: Session = Depends(get_db)):
-    """Google Calendar events via Coral SQL; falls back to demo user's Google token if Coral unavailable."""
+    """Google Calendar events — always fetches live from Google Calendar API.
+    Coral SQL is skipped because it caches stale data and misses newly created events."""
     try:
         token = _get_demo_google_token(db) or ""
-        rows = coral_client.get_calendar_events(token)
-        if rows is None:
-            # Coral unavailable — use direct Calendar API with the same token
-            if token:
-                events = _fetch_calendar_events(token)
-                return {"events": events}
+        if not token:
             return {"events": []}
-        now = datetime.utcnow()
-        cutoff = now - timedelta(days=1)  # include events from yesterday onwards
-        events = []
-        for r in rows:
-            start_raw = str(r.get("start_date_time") or r.get("start_date") or "")
-            if not start_raw:
-                continue
-            try:
-                if "T" in start_raw:
-                    start_dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
-                    # Convert timezone-aware dt to naive UTC for comparison
-                    if start_dt.tzinfo is not None:
-                        start_dt = start_dt.astimezone(timezone.utc).replace(tzinfo=None)
-                else:
-                    start_dt = datetime.strptime(start_raw[:10], "%Y-%m-%d")
-            except (ValueError, TypeError):
-                continue
-            if start_dt < cutoff:
-                continue
-            events.append({
-                "id":          r.get("id", ""),
-                "summary":     r.get("summary", ""),
-                "description": r.get("description", ""),
-                "start":       start_raw,
-                "end":         str(r.get("end_date_time") or r.get("end_date") or ""),
-                "_sort":       start_dt,
-            })
-        events.sort(key=lambda e: e["_sort"])
-        for e in events:
-            e.pop("_sort", None)
-        # Coral returned stale/empty data — fall back to live Google Calendar API
-        if not events and token:
-            live = _fetch_calendar_events(token)
-            if live:
-                return {"events": live}
-        return {"events": events[:30]}
+        events = _fetch_calendar_events(token)
+        return {"events": events}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
