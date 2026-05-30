@@ -1,7 +1,7 @@
 <div align="center">
 
 <img src="https://img.shields.io/badge/version-2.0.8-6366f1?style=flat-square" />
-<img src="https://img.shields.io/badge/deployed-netlify-00C7B7?style=flat-square&logo=netlify&logoColor=white" />
+<img src="https://img.shields.io/badge/deployed-vercel-000000?style=flat-square&logo=vercel&logoColor=white" />
 <img src="https://img.shields.io/badge/backend-railway-0B0D0E?style=flat-square&logo=railway&logoColor=white" />
 <img src="https://img.shields.io/badge/AI-Cohere-coral?style=flat-square" />
 <img src="https://img.shields.io/badge/data-Coral_SQL-ff6b35?style=flat-square" />
@@ -104,7 +104,7 @@ The theme was **Coral** — a tool that lets you query any REST API using SQL. W
 | Primary AI | Cohere `command-r-plus-08-2024` |
 | Fallback AI | Gemini 2.5 Flash (when Cohere is unavailable) |
 | Data layer | **Coral SQL** — queries REST APIs via SQL |
-| Deploy | Netlify (frontend) · Railway (backend) |
+| Deploy | Vercel (frontend) · Railway (backend) |
 
 ---
 
