@@ -18,7 +18,7 @@ with an AI coach that actually knows your goals and can schedule your week.
 
 <br />
 
-[**Live Demo →**](https://devmirrorcoral.netlify.app) &nbsp;·&nbsp; [**Report a Bug**](https://github.com/YashasviThakur/DevMirror/issues) &nbsp;·&nbsp; [**Request a Feature**](https://github.com/YashasviThakur/DevMirror/issues)
+[**Live Demo →**](https://coraldevmirror.vercel.app/) &nbsp;·&nbsp; [**Report a Bug**](https://github.com/YashasviThakur/DevMirror/issues) &nbsp;·&nbsp; [**Request a Feature**](https://github.com/YashasviThakur/DevMirror/issues)
 
 </div>
 
