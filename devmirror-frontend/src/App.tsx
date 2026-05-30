@@ -1,6 +1,25 @@
 import { Component, ReactNode, ErrorInfo, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 
+function PageSkeleton() {
+  return (
+    <div className="flex min-h-screen" style={{ background: '#FFFFFF' }}>
+      {/* sidebar shape */}
+      <div style={{ width: 220, minHeight: '100vh', background: '#1A1A14', flexShrink: 0 }} />
+      {/* content area */}
+      <div className="flex-1 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div
+            className="rounded-full animate-spin"
+            style={{ width: 32, height: 32, border: '2px solid #D8D4CC', borderTopColor: '#1A1A14' }}
+          />
+          <span style={{ fontSize: 12, color: '#6B6B65', fontFamily: 'monospace' }}>loading…</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const Landing      = lazy(() => import('./pages/Landing'))
 const Dashboard    = lazy(() => import('./pages/Dashboard'))
 const Gmail        = lazy(() => import('./pages/Gmail'))
@@ -37,7 +56,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <BrowserRouter>
-        <Suspense fallback={<div style={{ background: '#0A0A0F', minHeight: '100vh' }} />}>
+        <Suspense fallback={<PageSkeleton />}>
           <Routes>
             {/* Public */}
             <Route path="/"      element={<Landing />} />

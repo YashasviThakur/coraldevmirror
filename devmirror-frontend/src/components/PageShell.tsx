@@ -22,7 +22,7 @@ export default function PageShell({ children, title, subtitle, actions }: Props)
             {actions && <div className="flex items-center gap-3">{actions}</div>}
           </header>
         )}
-        <div className="flex-1 p-8 bg-white">
+        <div className="flex-1 p-8 bg-white animate-fade-in">
           {children}
         </div>
       </main>
