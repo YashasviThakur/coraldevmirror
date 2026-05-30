@@ -1,17 +1,17 @@
-import { Component, ReactNode, ErrorInfo } from 'react'
+import { Component, ReactNode, ErrorInfo, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import Landing      from './pages/Landing'
-import Login        from './pages/Login'
-import Dashboard    from './pages/Dashboard'
-import Gmail        from './pages/Gmail'
-import YouTube      from './pages/YouTube'
-import Coach        from './pages/Coach'
-import GrowthReport from './pages/GrowthReport'
-import DSAProgress  from './pages/DSAProgress'
-import FocusToday   from './pages/FocusToday'
-import LearnVsBuild from './pages/LearnVsBuild'
-import Internship   from './pages/Internship'
-import Calendar     from './pages/Calendar'
+
+const Landing      = lazy(() => import('./pages/Landing'))
+const Dashboard    = lazy(() => import('./pages/Dashboard'))
+const Gmail        = lazy(() => import('./pages/Gmail'))
+const YouTube      = lazy(() => import('./pages/YouTube'))
+const Coach        = lazy(() => import('./pages/Coach'))
+const GrowthReport = lazy(() => import('./pages/GrowthReport'))
+const DSAProgress  = lazy(() => import('./pages/DSAProgress'))
+const FocusToday   = lazy(() => import('./pages/FocusToday'))
+const LearnVsBuild = lazy(() => import('./pages/LearnVsBuild'))
+const Internship   = lazy(() => import('./pages/Internship'))
+const Calendar     = lazy(() => import('./pages/Calendar'))
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null }
@@ -37,27 +37,29 @@ export default function App() {
   return (
     <ErrorBoundary>
       <BrowserRouter>
-        <Routes>
-          {/* Public */}
-          <Route path="/"      element={<Landing />} />
-          <Route path="/login" element={<Navigate to="/dashboard" replace />} />
+        <Suspense fallback={<div style={{ background: '#0A0A0F', minHeight: '100vh' }} />}>
+          <Routes>
+            {/* Public */}
+            <Route path="/"      element={<Landing />} />
+            <Route path="/login" element={<Navigate to="/dashboard" replace />} />
 
-          {/* Core workspace */}
-          <Route path="/dashboard"   element={<Dashboard />} />
-          <Route path="/gmail"       element={<Gmail />} />
-          <Route path="/youtube"     element={<YouTube />} />
-          <Route path="/calendar"    element={<Calendar />} />
-          <Route path="/coach"       element={<Coach />} />
+            {/* Core workspace */}
+            <Route path="/dashboard"   element={<Dashboard />} />
+            <Route path="/gmail"       element={<Gmail />} />
+            <Route path="/youtube"     element={<YouTube />} />
+            <Route path="/calendar"    element={<Calendar />} />
+            <Route path="/coach"       element={<Coach />} />
 
-          {/* Legacy analytics pages */}
-          <Route path="/growth-report"  element={<GrowthReport />} />
-          <Route path="/dsa"            element={<DSAProgress />} />
-          <Route path="/focus"          element={<FocusToday />} />
-          <Route path="/learn-vs-build" element={<LearnVsBuild />} />
-          <Route path="/internship"     element={<Internship />} />
+            {/* Legacy analytics pages */}
+            <Route path="/growth-report"  element={<GrowthReport />} />
+            <Route path="/dsa"            element={<DSAProgress />} />
+            <Route path="/focus"          element={<FocusToday />} />
+            <Route path="/learn-vs-build" element={<LearnVsBuild />} />
+            <Route path="/internship"     element={<Internship />} />
 
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
       </BrowserRouter>
     </ErrorBoundary>
   )

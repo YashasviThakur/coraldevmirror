@@ -840,7 +840,7 @@ def _classify_videos_gemini(titles: list[str]) -> list[dict]:
         "If none qualify, return: []"
     )
     try:
-        url = GEMINI_URL.format(key=GEMINI_API_KEY)
+        url = GEMINI_URL.format(model=GEMINI_MODELS[0], key=GEMINI_API_KEY)
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2000},
@@ -1035,8 +1035,9 @@ def _fetch_youtube_liked(access_token: str) -> dict[str, Any]:
 
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.5-flash:generateContent?key={key}"
+    "{model}:generateContent?key={key}"
 )
+GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]
 
 _CALENDAR_SCHEDULE_TRIGGERS = [
     "schedule", "plan my", "what should i", "focus today", "focus this week",
@@ -1101,8 +1102,10 @@ def _extract_json_array(text: str) -> Optional[list]:
     return None
 
 
+_COHERE_MODELS = ["command-r-08-2024", "command-r", "command-r-plus"]
+
 def _call_cohere(system_prompt: str, user_message: str) -> tuple[str, bool]:
-    """Call Cohere API (v2 chat) and return (text, is_success)."""
+    """Call Cohere API (v2 chat), trying multiple models. Returns (text, is_success)."""
     if not COHERE_API_KEY:
         return "AI key not configured.", False
 
@@ -1112,63 +1115,80 @@ def _call_cohere(system_prompt: str, user_message: str) -> tuple[str, bool]:
         "Content-Type": "application/json",
     }
 
-    payload = {
-        "model": "command-r",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_message},
-        ],
-        "max_tokens": 1024,
-        "temperature": 0.3,
-    }
+    for model in _COHERE_MODELS:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_message},
+            ],
+            "max_tokens": 1024,
+            "temperature": 0.3,
+        }
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            if resp.status_code == 401:
+                logger.error("Cohere API key invalid (401) — update COHERE_API_KEY in Railway")
+                return "AI key invalid. Please update COHERE_API_KEY.", False
+            if resp.status_code == 403:
+                logger.warning(f"Cohere model {model} returned 403, trying next model")
+                continue
+            if resp.status_code == 429:
+                logger.warning("Cohere API rate-limited (429)")
+                return "AI is temporarily rate-limited. Please wait a moment and try again.", False
+            if resp.status_code != 200:
+                logger.warning(f"Cohere model {model} returned {resp.status_code}, trying next model")
+                continue
 
-    try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=30)
-        if resp.status_code == 429:
-            logger.warning("Cohere API rate-limited (429)")
-            return "AI is temporarily rate-limited. Please wait a moment and try again.", False
-        if resp.status_code != 200:
-            logger.error(f"Cohere API error ({resp.status_code}): {resp.text}")
-            return f"AI unavailable (status {resp.status_code}). Please try again shortly.", False
+            data = resp.json()
+            message = data.get("message", {})
+            content = message.get("content", [])
+            if content:
+                text = content[0].get("text", "").strip()
+                if text:
+                    logger.info(f"Cohere responded using model: {model}")
+                    return text, True
+        except Exception as e:
+            logger.warning(f"Cohere model {model} failed: {str(e)}")
+            continue
 
-        data = resp.json()
-        message = data.get("message", {})
-        content = message.get("content", [])
-        if content:
-            text = content[0].get("text", "").strip()
-            if text:
-                return text, True
-        logger.error(f"Cohere returned no content: {data}")
-        return "No response from AI service.", False
-    except Exception as e:
-        logger.error(f"Cohere call failed: {str(e)}")
-        return f"Could not reach the AI service: {str(e)}", False
+    logger.error("All Cohere models failed")
+    return "Cohere AI unavailable. Trying fallback...", False
 
 
 def _call_gemini(system_prompt: str, user_message: str) -> tuple[str, bool]:
-    """Call Gemini and return (text, is_success). is_success indicates whether to use the text."""
+    """Call Gemini, trying multiple models. Returns (text, is_success)."""
     if not GEMINI_API_KEY:
-        return "Gemini API key not configured. Set GEMINI_API_KEY in your .env file.", False
+        return "Gemini API key not configured. Set GEMINI_API_KEY in Railway.", False
 
-    url     = GEMINI_URL.format(key=GEMINI_API_KEY)
     payload = {
         "contents":          [{"role": "user", "parts": [{"text": user_message}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "generationConfig":  {"temperature": 0.3, "maxOutputTokens": 1024},
     }
-    try:
-        resp = requests.post(url, json=payload, timeout=30)
-        if resp.status_code == 429:
-            return "AI is temporarily rate-limited. Please wait a moment and try again.", False
-        if resp.status_code != 200:
-            return f"AI unavailable (status {resp.status_code}). Please try again shortly.", False
-        candidates = resp.json().get("candidates", [])
-        if candidates:
-            text = candidates[0]["content"]["parts"][0]["text"]
-            return text, True
-        return "No response from Gemini.", False
-    except Exception:
-        return "Could not reach the AI service. Check your internet connection and try again.", False
+    for model in GEMINI_MODELS:
+        url = GEMINI_URL.format(model=model, key=GEMINI_API_KEY)
+        try:
+            resp = requests.post(url, json=payload, timeout=30)
+            if resp.status_code == 429:
+                return "AI is temporarily rate-limited. Please wait a moment and try again.", False
+            if resp.status_code in (401, 403):
+                logger.warning(f"Gemini model {model} returned {resp.status_code}, trying next")
+                continue
+            if resp.status_code != 200:
+                logger.warning(f"Gemini model {model} returned {resp.status_code}, trying next")
+                continue
+            candidates = resp.json().get("candidates", [])
+            if candidates:
+                text = candidates[0]["content"]["parts"][0]["text"]
+                logger.info(f"Gemini responded using model: {model}")
+                return text, True
+        except Exception as e:
+            logger.warning(f"Gemini model {model} failed: {str(e)}")
+            continue
+
+    logger.error("All Gemini models failed — check GEMINI_API_KEY in Railway")
+    return "AI service unavailable. Please check your API keys in Railway.", False
 
 
 def call_ai(system_prompt: str, user_message: str) -> tuple[str, bool]:
